@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentcore"
+version = "0.1.0"
+description = "Agent harness control plane core domain models"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+	"fastapi>=0.112.0",
+	"pydantic>=2.8.0",
+	"uvicorn>=0.30.0",
+	"python-multipart>=0.0.9",
+	"langchain-openai>=1.0.0",
+	"langgraph-checkpoint-sqlite>=2.0.0",
+	"deepagents @ file:///D:/code/deepagents/libs/deepagents",
+]
+
+[project.optional-dependencies]
+dev = [
+	"pytest>=8.2.0",
+]
+
+[project.scripts]
+agentcore-api = "agentcore.main:run"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

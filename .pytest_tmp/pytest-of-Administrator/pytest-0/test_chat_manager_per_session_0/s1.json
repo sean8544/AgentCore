@@ -1,0 +1,18 @@
+{
+  "session_id": "s1",
+  "agent_id": "a",
+  "created_at": "2026-08-12T15:53:12.151355+00:00",
+  "updated_at": "2026-08-12T15:53:12.157564+00:00",
+  "messages": [
+    {
+      "role": "user",
+      "content": "hello",
+      "timestamp": "2026-08-12T15:53:12.154464+00:00"
+    },
+    {
+      "role": "assistant",
+      "content": "hi there",
+      "timestamp": "2026-08-12T15:53:12.157564+00:00"
+    }
+  ]
+}

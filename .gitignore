@@ -1,0 +1,39 @@
+# Node / frontend
+node_modules/
+.next/
+out/
+dist/
+build/
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# IDE / editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test coverage
+coverage/
+htmlcov/
+
+# AgentCore runtime data
+.agentcore/
+
+# Misc
+*.tmp
+*.bak

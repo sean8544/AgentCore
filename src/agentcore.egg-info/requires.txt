@@ -1,0 +1,10 @@
+fastapi>=0.112.0
+pydantic>=2.8.0
+uvicorn>=0.30.0
+python-multipart>=0.0.9
+langchain-openai>=1.0.0
+langgraph-checkpoint-sqlite>=2.0.0
+deepagents @ file:///D:/code/deepagents/libs/deepagents
+
+[dev]
+pytest>=8.2.0

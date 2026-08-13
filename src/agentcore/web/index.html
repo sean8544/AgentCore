@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AgentCore Control Plane</title>
+    <style>
+      :root {
+        --bg: #f4efe6;
+        --ink: #1c1a17;
+        --card: #fffdf8;
+        --line: #d8cfbf;
+        --accent: #03543f;
+      }
+      body {
+        margin: 0;
+        font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+        background: radial-gradient(circle at 10% 10%, #fff7df 0%, var(--bg) 40%, #e8dfd1 100%);
+        color: var(--ink);
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: 280px 1fr;
+        min-height: 100vh;
+      }
+      .sidebar {
+        border-right: 1px solid var(--line);
+        background: rgba(255, 253, 248, 0.85);
+        padding: 20px;
+      }
+      .brand {
+        font-size: 20px;
+        font-weight: 700;
+        margin-bottom: 16px;
+      }
+      .domain {
+        margin-bottom: 14px;
+        padding: 10px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--card);
+      }
+      .domain h3 {
+        margin: 0 0 8px;
+        font-size: 14px;
+      }
+      .domain ul {
+        margin: 0;
+        padding-left: 18px;
+      }
+      .main {
+        padding: 24px;
+      }
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--card);
+        padding: 16px;
+      }
+      .panel h2 {
+        margin-top: 0;
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+      input,
+      textarea,
+      select,
+      button {
+        font: inherit;
+      }
+      button {
+        border: 0;
+        border-radius: 8px;
+        background: var(--accent);
+        color: white;
+        padding: 8px 14px;
+        cursor: pointer;
+      }
+      pre {
+        border-radius: 10px;
+        background: #efe8da;
+        padding: 12px;
+        overflow: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="brand">AgentCore</div>
+        <div id="navigation"></div>
+      </aside>
+      <main class="main">
+        <section class="panel">
+          <h2>运行预览</h2>
+          <p>输入 profile id 后可调用 compile-preview 验证三核文件与策略组合结果。</p>
+          <div class="row">
+            <input id="profileId" value="demo-profile" />
+            <select id="backend">
+              <option value="sandbox">sandbox</option>
+              <option value="local">local</option>
+            </select>
+            <input id="version" value="0.7.0" />
+            <button id="preview">预览</button>
+          </div>
+          <pre id="output">等待操作...</pre>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      async function loadNavigation() {
+        const response = await fetch('/navigation');
+        const data = await response.json();
+        const root = document.getElementById('navigation');
+        root.innerHTML = '';
+        data.forEach((item) => {
+          const card = document.createElement('section');
+          card.className = 'domain';
+          card.innerHTML = `<h3>${item.display_name}</h3><ul>${item.children
+            .map((c) => `<li>${c}</li>`)
+            .join('')}</ul>`;
+          root.appendChild(card);
+        });
+      }
+
+      async function compilePreview() {
+        const profileId = document.getElementById('profileId').value;
+        const backend = document.getElementById('backend').value;
+        const deepagentsVersion = document.getElementById('version').value;
+
+        const response = await fetch(`/profiles/${profileId}/compile-preview`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ backend, deepagents_version: deepagentsVersion }),
+        });
+
+        const body = await response.json();
+        document.getElementById('output').textContent = JSON.stringify(body, null, 2);
+      }
+
+      document.getElementById('preview').addEventListener('click', compilePreview);
+      loadNavigation();
+    </script>
+  </body>
+</html>

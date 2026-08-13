@@ -1,0 +1,48 @@
+Metadata-Version: 2.4
+Name: agentcore
+Version: 0.1.0
+Summary: Agent harness control plane core domain models
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.112.0
+Requires-Dist: pydantic>=2.8.0
+Requires-Dist: uvicorn>=0.30.0
+Requires-Dist: python-multipart>=0.0.9
+Requires-Dist: langchain-openai>=1.0.0
+Requires-Dist: langgraph-checkpoint-sqlite>=2.0.0
+Requires-Dist: deepagents @ file:///D:/code/deepagents/libs/deepagents
+Provides-Extra: dev
+Requires-Dist: pytest>=8.2.0; extra == "dev"
+
+# AgentCore
+
+本仓库是 AgentCore 管理平面的实现代码（deepagents 内核）。
+
+## 本地启动（Windows）
+
+在仓库根目录运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-local.ps1
+```
+
+可选参数：
+
+```powershell
+# 指定地址和端口
+powershell -ExecutionPolicy Bypass -File .\scripts\start-local.ps1 -HostName 0.0.0.0 -Port 8000
+
+# 安装开发依赖（含 pytest）
+powershell -ExecutionPolicy Bypass -File .\scripts\start-local.ps1 -InstallDevDeps
+```
+
+启动后访问：
+
+- 首页: http://127.0.0.1:8000/
+- OpenAPI 文档: http://127.0.0.1:8000/docs
+
+## 运行测试
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```
