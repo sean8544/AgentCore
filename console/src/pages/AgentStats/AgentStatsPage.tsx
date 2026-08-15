@@ -9,6 +9,7 @@ import {
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { apiClient } from '../../api/client';
+import { useI18n } from '../../i18n';
 
 const { Text } = Typography;
 
@@ -33,15 +34,16 @@ interface StatsData {
   agents: AgentStat[];
 }
 
-const STATE_LABELS: Record<string, { text: string; color: string }> = {
-  running: { text: '运行中', color: 'success' },
-  idle: { text: '空闲', color: 'processing' },
-  started: { text: '已启动', color: 'success' },
-  stopped: { text: '已停止', color: 'default' },
-  error: { text: '错误', color: 'error' },
+const STATE_LABELS: Record<string, { textKey: string; color: string }> = {
+  running: { textKey: 'stats.running', color: 'success' },
+  idle: { textKey: 'stats.idle', color: 'processing' },
+  started: { textKey: 'stats.started', color: 'success' },
+  stopped: { textKey: 'stats.stopped', color: 'default' },
+  error: { textKey: 'stats.error', color: 'error' },
 };
 
 export default function AgentStatsPage() {
+  const { t } = useI18n();
   const [data, setData] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -71,29 +73,29 @@ export default function AgentStatsPage() {
           <Text strong>{id}</Text>
           {record.loaded && (
             <Tag style={{ fontSize: 11, color: ORANGE, borderColor: '#ffd8b3', background: '#fff7ef' }}>
-              已加载
+              {t('stats.loaded')}
             </Tag>
           )}
         </Space>
       ),
     },
     {
-      title: '状态',
+      title: t('common.status'),
       dataIndex: 'state',
       width: 120,
       render: (state: string | null, record) => {
         if (state && STATE_LABELS[state]) {
           const info = STATE_LABELS[state];
-          return <Badge status={info.color as 'success'} text={info.text} />;
+          return <Badge status={info.color as 'success'} text={t(info.textKey)} />;
         }
         return record.loaded
-          ? <Badge status="success" text="就绪" />
-          : <Badge status="default" text="未加载" />;
+          ? <Badge status="success" text={t('stats.ready')} />
+          : <Badge status="default" text={t('stats.unloaded')} />;
       },
     },
-    { title: '会话数', dataIndex: 'session_count', width: 110, align: 'right' },
-    { title: '消息数', dataIndex: 'message_count', width: 110, align: 'right' },
-    { title: '技能数', dataIndex: 'skills_count', width: 110, align: 'right' },
+    { title: t('stats.sessionCount'), dataIndex: 'session_count', width: 110, align: 'right' },
+    { title: t('stats.messageCount'), dataIndex: 'message_count', width: 110, align: 'right' },
+    { title: t('stats.skillCount'), dataIndex: 'skills_count', width: 110, align: 'right' },
   ];
 
   return (
@@ -103,7 +105,7 @@ export default function AgentStatsPage() {
         <Col span={6}>
           <Card size="small" loading={loading && !data}>
             <Statistic
-              title="Agent 总数"
+              title={t('stats.totalAgents')}
               value={data?.agent_count ?? 0}
               prefix={<RobotOutlined />}
               valueStyle={{ color: ORANGE, fontSize: 28 }}
@@ -113,7 +115,7 @@ export default function AgentStatsPage() {
         <Col span={6}>
           <Card size="small" loading={loading && !data}>
             <Statistic
-              title="运行中 / 已加载"
+              title={t('stats.runningLoaded')}
               value={data?.running_count ?? 0}
               prefix={<PlayCircleOutlined />}
               valueStyle={{ fontSize: 28 }}
@@ -123,7 +125,7 @@ export default function AgentStatsPage() {
         <Col span={6}>
           <Card size="small" loading={loading && !data}>
             <Statistic
-              title="会话总数"
+              title={t('stats.totalSessions')}
               value={data?.session_count ?? 0}
               prefix={<MessageOutlined />}
               valueStyle={{ fontSize: 28 }}
@@ -133,7 +135,7 @@ export default function AgentStatsPage() {
         <Col span={6}>
           <Card size="small" loading={loading && !data}>
             <Statistic
-              title="消息总数"
+              title={t('stats.totalMessages')}
               value={data?.message_count ?? 0}
               prefix={<CommentOutlined />}
               valueStyle={{ fontSize: 28 }}
@@ -144,7 +146,7 @@ export default function AgentStatsPage() {
 
       {/* ── Per-agent breakdown ── */}
       <Card
-        title={<span>Agent 明细</span>}
+        title={<span>{t('stats.agentDetail')}</span>}
         styles={{ body: { padding: 0 } }}
         extra={
           <Button
@@ -152,7 +154,7 @@ export default function AgentStatsPage() {
             icon={<ReloadOutlined spin={loading} />}
             onClick={() => void loadStats()}
           >
-            刷新
+            {t('common.refresh')}
           </Button>
         }
       >

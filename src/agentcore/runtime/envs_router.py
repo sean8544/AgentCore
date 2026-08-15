@@ -166,6 +166,7 @@ async def update_envs(body: dict[str, Any]) -> dict[str, Any]:
             os.environ.pop(key, None)
             continue
         merged[key] = str(value)
+        os.environ[key] = str(value)
 
     _save_envs(merged)
     logger.info("Environment variables updated (%d entries)", len(merged))

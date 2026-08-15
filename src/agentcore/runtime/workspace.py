@@ -65,9 +65,9 @@ def _now_iso() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Kernel files (bootstrap.md / agent.md / profile.md / soul.md)
+# Kernel files (bootstrap.md / agent.md)
 #
-# Each workspace directory holds up to four "kernel" markdown files whose
+# Each workspace directory holds up to two "kernel" markdown files whose
 # contents are dynamically injected as the agent's system_prompt whenever
 # the agent graph is (re)created.
 #
@@ -75,14 +75,30 @@ def _now_iso() -> str:
 # creation to guide the user through initial setup.  Once the agent (or the
 # user) removes it, it is never re-created — the ``.bootstrap_seeded``
 # marker file records that seeding already happened.
+#
+# ``agent.md`` is the single identity/persona file (name, role, behaviour,
+# tone).  It is injected at the *reference* level via the SDK's ``memory=[]``
+# mechanism, so strong "instructions" (e.g. must-always rules) belong in
+# ``settings.system_prompt`` instead.
+#
+# Legacy files (``profile.md`` / ``soul.md``) from workspaces created before
+# the 2026-08 kernel simplification are still read and editable for
+# backwards compatibility, but no new workspace seeds them.
 # ---------------------------------------------------------------------------
 
 KERNEL_FILE_NAMES: tuple[str, ...] = (
     "bootstrap.md",
     "agent.md",
+)
+
+# Files seeded by older versions; kept readable/editable when present so
+# existing workspaces keep working unchanged.
+LEGACY_KERNEL_FILE_NAMES: tuple[str, ...] = (
     "profile.md",
     "soul.md",
 )
+
+ALL_KERNEL_FILE_NAMES: tuple[str, ...] = KERNEL_FILE_NAMES + LEGACY_KERNEL_FILE_NAMES
 
 KERNEL_FILE_HEADINGS: dict[str, str] = {
     "bootstrap.md": "# 欢迎",
@@ -94,21 +110,10 @@ KERNEL_FILE_HEADINGS: dict[str, str] = {
 DEFAULT_KERNEL_FILES: dict[str, str] = {
     "agent.md": (
         "# Agent 身份\n\n"
-        "你是一个 AI 助手。\n\n"
+        "你是一个乐于助人的 AI 助手，名叫 AgentCore。\n\n"
         "## 行为准则\n"
         "- 保持友好和专业\n"
-        "- 回答简洁明了\n"
-    ),
-    "profile.md": (
-        "# Profile 配置\n\n"
-        "## 模型\n"
-        "- Provider: openai\n"
-        "- Model: qwen3.6-plus\n\n"
-        "（模型配置以 agent.json 为准，可在「模型」页面修改）\n"
-    ),
-    "soul.md": (
-        "# 核心人设\n\n"
-        "你是一个乐于助人的 AI 助手，名叫 AgentCore。\n\n"
+        "- 回答简洁明了\n\n"
         "## 性格特点\n"
         "- 友善、耐心\n"
         "- 善于倾听和理解\n"
@@ -133,14 +138,13 @@ DEFAULT_BOOTSTRAP_MD = """# 欢迎使用 AgentCore！
 
 询问用户想给我起的名字和性格偏好，然后使用 write_file 工具更新：
 
-- `/agent.md` — 我的身份定义（名字、角色、行为准则）
-- `/soul.md` — 我的核心人设（性格、语气、价值观）
+- `/agent.md` — 我的身份与人设（名字、角色、行为准则、性格）
 
 ## 第二步：了解用户的偏好
 
 询问用户的 profile 偏好（语言风格、回答习惯等），然后使用 write_file 工具更新：
 
-- `/profile.md` — 用户的偏好配置
+- `/memory/USER.md` — 用户的偏好配置
 
 ## 第三步：告知模型配置方式
 
@@ -212,6 +216,33 @@ DEFAULT_AGENT_JSON: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 SKILLS_DIR_NAME = "skills"
+
+# ---------------------------------------------------------------------------
+# Memory directory
+#
+# Each workspace holds a ``memory/`` directory for persistent agent memory.
+# Inspired by QwenPaw/ReMe's file-based memory approach:
+#
+#   memory/
+#   ├── MEMORY.md          ← long-term facts, preferences, knowledge
+#   ├── USER.md            ← user profile (habits, relationships, style)
+#   └── sessions/          ← daily session archives
+#       └── YYYY-MM-DD.md
+#
+# The agent can read/write these files via the built-in file tools
+# (edit_file / write_file).  Files are loaded into the system prompt by
+# the SDK's MemoryMiddleware at agent startup and on each new conversation
+# turn.  Files are plain Markdown so users can browse and edit them in the
+# Files page.
+# ---------------------------------------------------------------------------
+
+MEMORY_DIR_NAME = "memory"
+MEMORY_FILE_NAME = "MEMORY.md"
+USER_FILE_NAME = "USER.md"
+SESSIONS_ARCHIVE_DIR_NAME = "sessions"
+
+DEFAULT_MEMORY_MD = "# Long-term Memory\n\nThis file stores long-term facts, preferences, and knowledge accumulated through interactions.\n\n"
+DEFAULT_USER_MD = "# User Profile\n\nThis file stores the user's habits, preferences, communication style, and relationship context.\n\n"
 
 DEFAULT_EXAMPLE_SKILL = """---
 name: example
@@ -732,6 +763,10 @@ class Workspace:
         # skills up from the workspace.
         self._ensure_default_skills_dir()
 
+        # Memory — seed the ``memory/`` directory with default MEMORY.md
+        # and USER.md files for persistent agent memory (Phase 1-3).
+        self._ensure_memory_dir()
+
         self._initialized = False
 
         logger.debug(
@@ -789,8 +824,9 @@ class Workspace:
         """
         logger.info("Workspace[%s]: reloading …", self.workspace_id)
 
-        # Re-read kernel files (agent.md / profile.md / soul.md) so that
-        # a subsequently (re)created agent picks up the new system_prompt.
+        # Re-read kernel files (bootstrap.md / agent.md, plus legacy
+        # profile.md / soul.md when present) so that a subsequently
+        # (re)created agent picks up the new system_prompt.
         self._kernel_files = self._load_kernel_files()
 
         # Re-load chat sessions from disk.
@@ -856,12 +892,13 @@ class Workspace:
     def _load_kernel_files(self) -> dict[str, str]:
         """Read the kernel markdown files from disk.
 
-        Covers ``bootstrap.md`` / ``agent.md`` / ``profile.md`` /
-        ``soul.md``.  Missing or unreadable files are skipped gracefully —
-        the resulting system_prompt simply omits them.
+        Covers the standard files (``bootstrap.md`` / ``agent.md``) plus
+        legacy ``profile.md`` / ``soul.md`` when present.  Missing or
+        unreadable files are skipped gracefully — the resulting
+        system_prompt simply omits them.
         """
         files: dict[str, str] = {}
-        for name in KERNEL_FILE_NAMES:
+        for name in ALL_KERNEL_FILE_NAMES:
             path = self.workspace_dir / name
             if not path.exists():
                 continue
@@ -879,13 +916,13 @@ class Workspace:
     def get_system_prompt(self) -> str:
         """Compose the kernel files into a single system prompt.
 
-        Sections appear in ``bootstrap.md`` → ``agent.md`` → ``profile.md``
-        → ``soul.md`` order, separated by ``---`` rules.  Empty or missing
-        files are skipped; when nothing is available an empty string is
-        returned.
+        Sections appear in ``bootstrap.md`` → ``agent.md`` order, with
+        legacy ``profile.md`` / ``soul.md`` appended after them when
+        present, separated by ``---`` rules.  Empty or missing files are
+        skipped; when nothing is available an empty string is returned.
         """
         parts: list[str] = []
-        for name in KERNEL_FILE_NAMES:
+        for name in ALL_KERNEL_FILE_NAMES:
             content = self._kernel_files.get(name)
             if content is None or not content.strip():
                 continue
@@ -904,7 +941,7 @@ class Workspace:
 
         ``None`` is returned for unknown filenames or missing files.
         """
-        if filename not in KERNEL_FILE_NAMES:
+        if filename not in ALL_KERNEL_FILE_NAMES:
             return None
         path = self.workspace_dir / filename
         if not path.exists():
@@ -919,10 +956,10 @@ class Workspace:
         ValueError
             If *filename* is not one of the recognised kernel files.
         """
-        if filename not in KERNEL_FILE_NAMES:
+        if filename not in ALL_KERNEL_FILE_NAMES:
             raise ValueError(
                 f"Unknown kernel file {filename!r}; expected one of "
-                f"{KERNEL_FILE_NAMES}"
+                f"{ALL_KERNEL_FILE_NAMES}"
             )
         path = self.workspace_dir / filename
         path.write_text(content, encoding="utf-8")
@@ -951,13 +988,23 @@ class Workspace:
         """
         path = self.workspace_dir / AGENT_JSON_NAME
         if not path.exists():
+            # A console-configured default model (model registry) seeds new
+            # agents; otherwise the built-in default model is used.
+            from agentcore.runtime.model_store import get_default_model_config
+
+            seed_model = get_default_model_config() or dict(
+                DEFAULT_AGENT_JSON["model"]
+            )
             config = {
-                "model": dict(DEFAULT_AGENT_JSON["model"]),
+                "model": seed_model,
                 "tools": dict(DEFAULT_AGENT_JSON["tools"]),
                 "settings": dict(DEFAULT_AGENT_JSON["settings"]),
             }
             if self.agent_id == "default":
                 config["settings"]["enable_subagents"] = True
+            # New agents get structured todo/plan support out of the box
+            # (write_todos tool via ``settings.enable_planning``).
+            config["settings"]["enable_planning"] = True
             try:
                 _atomic_write_json(path, config)
                 logger.info(
@@ -1147,6 +1194,113 @@ class Workspace:
             return len(list(skills_dir.glob("*/SKILL.md")))
         except OSError:
             return 0
+
+    # -- memory directory ---------------------------------------------------
+
+    def _ensure_memory_dir(self) -> None:
+        """Create the ``memory/`` directory with default files.
+
+        Seeds ``MEMORY.md`` and ``USER.md`` on first creation; existing
+        files are never overwritten.  Also creates the ``sessions/``
+        sub-directory for daily session archives.
+        """
+        memory_dir = self.workspace_dir / MEMORY_DIR_NAME
+        try:
+            memory_dir.mkdir(exist_ok=True)
+        except OSError as exc:
+            logger.warning(
+                "Workspace[%s]: failed to create memory directory: %s",
+                self.workspace_id,
+                exc,
+            )
+            return
+
+        # Seed default memory files.
+        for filename, default_content in (
+            (MEMORY_FILE_NAME, DEFAULT_MEMORY_MD),
+            (USER_FILE_NAME, DEFAULT_USER_MD),
+        ):
+            path = memory_dir / filename
+            if not path.exists():
+                try:
+                    path.write_text(default_content, encoding="utf-8")
+                    logger.info(
+                        "Workspace[%s]: created default memory/%s",
+                        self.workspace_id,
+                        filename,
+                    )
+                except OSError as exc:
+                    logger.warning(
+                        "Workspace[%s]: failed to create memory/%s: %s",
+                        self.workspace_id,
+                        filename,
+                        exc,
+                    )
+
+        # Sessions archive sub-directory.
+        sessions_dir = memory_dir / SESSIONS_ARCHIVE_DIR_NAME
+        try:
+            sessions_dir.mkdir(exist_ok=True)
+        except OSError as exc:
+            logger.warning(
+                "Workspace[%s]: failed to create memory/sessions directory: %s",
+                self.workspace_id,
+                exc,
+            )
+
+    def get_memory_dir(self) -> Path:
+        """Return the path to the workspace's ``memory/`` directory."""
+        return self.workspace_dir / MEMORY_DIR_NAME
+
+    def get_sessions_archive_dir(self) -> Path:
+        """Return the path to ``memory/sessions/``."""
+        return self.workspace_dir / MEMORY_DIR_NAME / SESSIONS_ARCHIVE_DIR_NAME
+
+    def read_memory_file(self, filename: str) -> str | None:
+        """Return the content of a memory file, or ``None``."""
+        path = self.workspace_dir / MEMORY_DIR_NAME / filename
+        if not path.exists():
+            return None
+        try:
+            return path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+
+    def append_to_memory_file(self, filename: str, content: str) -> None:
+        """Append *content* to a memory file (creating it if needed)."""
+        path = self.workspace_dir / MEMORY_DIR_NAME / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(content)
+
+    def archive_session_messages(
+        self,
+        date_str: str,
+        agent_id: str,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        """Append *messages* to the daily session archive markdown file.
+
+        The archive lives at ``memory/sessions/YYYY-MM-DD.md`` and is
+        append-only — each call adds a new section with a timestamp header.
+        """
+        archive_dir = self.get_sessions_archive_dir()
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = archive_dir / f"{date_str}.md"
+
+        lines: list[str] = []
+        if not archive_path.exists():
+            lines.append(f"# Session Archive — {date_str}\n\n")
+
+        lines.append(f"## Agent: {agent_id}\n\n")
+        for msg in messages:
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            ts = msg.get("timestamp", "")
+            lines.append(f"**[{role}]** _{ts}_\n\n{content}\n\n---\n\n")
+
+        with open(archive_path, "a", encoding="utf-8") as f:
+            f.write("".join(lines))
 
     # -- query helpers ------------------------------------------------------
 

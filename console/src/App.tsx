@@ -1,5 +1,8 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { ConfigProvider } from 'antd';
+import zhCN from 'antd/locale/zh_CN';
+import enUS from 'antd/locale/en_US';
+import { useI18n } from './i18n';
 import MainLayout from './layouts/MainLayout';
 import ChatPage from './pages/Chat/ChatPage';
 import InboxPage from './pages/Inbox/InboxPage';
@@ -24,25 +27,28 @@ import BackupsPage from './pages/Backups/BackupsPage';
 import VoicePage from './pages/Voice/VoicePage';
 import DebugPage from './pages/Debug/DebugPage';
 
+const antdLocales = { 'zh-CN': zhCN, en: enUS } as const;
+
 export default function App() {
+  const { locale } = useI18n();
   return (
-    <ConfigProvider>
+    <ConfigProvider locale={antdLocales[locale]}>
       <BrowserRouter>
         <Routes>
           <Route element={<MainLayout />}>
-            <Route path="/chat" element={<ChatPage />} />
+            <Route path="/chat/:agentId?" element={<ChatPage />} />
             <Route path="/inbox" element={<InboxPage />} />
             <Route path="/channels" element={<ChannelsPage />} />
-            <Route path="/sessions" element={<SessionsPage />} />
+            <Route path="/sessions/:agentId?" element={<SessionsPage />} />
             <Route path="/cron-jobs" element={<CronJobsPage />} />
             <Route path="/heartbeat" element={<HeartbeatPage />} />
-            <Route path="/files" element={<FilesPage />} />
+            <Route path="/files/:agentId?" element={<FilesPage />} />
             <Route path="/skills" element={<SkillsPage />} />
             <Route path="/tools" element={<ToolsPage />} />
             <Route path="/mcp" element={<McpPage />} />
             <Route path="/acp" element={<AcpPage />} />
-            <Route path="/agent-config" element={<AgentConfigPage />} />
-            <Route path="/agent-stats" element={<AgentStatsPage />} />
+            <Route path="/agent-config/:agentId?" element={<AgentConfigPage />} />
+            <Route path="/agent-stats/:agentId?" element={<AgentStatsPage />} />
             <Route path="/agents" element={<AgentsPage />} />
             <Route path="/models" element={<ModelsPage />} />
             <Route path="/skill-pool" element={<SkillPoolPage />} />

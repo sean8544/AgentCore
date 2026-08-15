@@ -15,6 +15,8 @@ import {
   Select,
   Skeleton,
   Space,
+  Steps,
+  Switch,
   Table,
   Tag,
   Tooltip,
@@ -29,6 +31,7 @@ import {
   FolderOpenOutlined,
   InboxOutlined,
   InfoCircleOutlined,
+  BranchesOutlined,
   PauseCircleOutlined,
   PlusOutlined,
   PoweroffOutlined,
@@ -40,7 +43,11 @@ import {
   SyncOutlined,
   WarningOutlined,
 } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 import { apiClient } from '../../api/client';
+import { useI18n } from '../../i18n';
+import { useAgentStore } from '../../stores/agentStore';
+import { extractErrorMessage, formatDateTime } from '../../utils/helpers';
 
 const { Title, Text } = Typography;
 
@@ -55,6 +62,8 @@ interface AgentInfo {
   state: AgentState | null;
   loaded: boolean;
   session_count: number;
+  description?: string;
+  enable_subagents?: boolean;
 }
 
 interface AgentDetail {
@@ -66,10 +75,21 @@ interface AgentDetail {
   kernel_files?: string[];
   initialized?: boolean;
   created_at?: string;
+  settings?: {
+    description?: string;
+    system_prompt?: string;
+    enable_subagents?: boolean;
+    inherit_parent_tools?: boolean;
+  };
+  subagents?: { name: string; description?: string }[];
 }
 
 interface CreateAgentFormValues {
   agent_id: string;
+  description?: string;
+  system_prompt?: string;
+  enable_subagents?: boolean;
+  inherit_parent_tools?: boolean;
   model_mode?: 'inherit' | 'existing' | 'custom';
   selected_model?: string;
   provider?: string;
@@ -88,55 +108,34 @@ interface ModelCatalogItem {
 type RowAction = 'start' | 'stop' | 'reload' | 'delete';
 
 // ---------------------------------------------------------------------------
-// Current-agent store (localStorage fallback)
+// Current-agent marker
 //
-// Task #25 将引入独立的 agentStore（Zustand）。此处先用 localStorage 兜底，
-// 接口保持最小化（get/set），后续切换时只需替换这两个函数。
+// “设为当前”直接写入全局 agentStore（与侧边栏下拉、聊天页共用同一数据源），
+// 不再维护独立的 localStorage 副本，避免两处状态不一致。
 // ---------------------------------------------------------------------------
-
-const CURRENT_AGENT_KEY = 'agentcore.current_agent_id';
-
-const currentAgentStore = {
-  get(): string | null {
-    try {
-      return window.localStorage.getItem(CURRENT_AGENT_KEY);
-    } catch {
-      return null;
-    }
-  },
-  set(agentId: string | null) {
-    try {
-      if (agentId === null) {
-        window.localStorage.removeItem(CURRENT_AGENT_KEY);
-      } else {
-        window.localStorage.setItem(CURRENT_AGENT_KEY, agentId);
-      }
-    } catch {
-      // localStorage 不可用时静默降级
-    }
-  },
-};
 
 // ---------------------------------------------------------------------------
 // Status presentation
 // ---------------------------------------------------------------------------
 
-const STATE_META: Record<
+const getStateMeta = (t: (key: string) => string): Record<
   string,
   { color: string; text: string; icon: ReactNode }
-> = {
-  idle: { color: 'geekblue', text: '空闲', icon: <InboxOutlined /> },
-  running: { color: 'green', text: '运行中', icon: <SyncOutlined spin /> },
-  paused: { color: 'orange', text: '已暂停', icon: <PauseCircleOutlined /> },
-  stopped: { color: 'default', text: '已停止', icon: <StopOutlined /> },
-  error: { color: 'red', text: '错误', icon: <WarningOutlined /> },
-};
+> => ({
+  idle: { color: 'geekblue', text: t('agents.stateIdle'), icon: <InboxOutlined /> },
+  running: { color: 'green', text: t('agents.stateRunning'), icon: <SyncOutlined spin /> },
+  paused: { color: 'orange', text: t('agents.statePaused'), icon: <PauseCircleOutlined /> },
+  stopped: { color: 'default', text: t('agents.stateStopped'), icon: <StopOutlined /> },
+  error: { color: 'red', text: t('agents.stateError'), icon: <WarningOutlined /> },
+});
 
 function StateTag({ state }: { state: AgentState | null }) {
+  const { t } = useI18n();
+  const STATE_META = getStateMeta(t);
   if (!state) {
     return (
       <Tag icon={<InboxOutlined />} style={{ margin: 0 }}>
-        未加载
+        {t('agents.stateUnloaded')}
       </Tag>
     );
   }
@@ -148,28 +147,11 @@ function StateTag({ state }: { state: AgentState | null }) {
   );
 }
 
-const KERNEL_FILE_LABELS: Record<string, string> = {
-  'agent.md': 'Agent 身份',
-  'profile.md': 'Profile 配置',
-  'soul.md': '核心人设',
-};
-
-function extractErrorMessage(error: unknown): string {
-  if (typeof error === 'object' && error !== null && 'response' in error) {
-    const resp = (error as { response?: { data?: { detail?: unknown } } }).response;
-    const detail = resp?.data?.detail;
-    if (typeof detail === 'string' && detail) return detail;
-  }
-  if (error instanceof Error) return error.message;
-  return '请求失败';
-}
-
-function formatDateTime(value: string | null | undefined): string {
-  if (!value) return '—';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString('zh-CN', { hour12: false });
-}
+const getKernelFileLabels = (t: (key: string) => string): Record<string, string> => ({
+  'agent.md': t('agents.agentIdentity'),
+  'profile.md': t('agents.profileConfig'),
+  'soul.md': t('agents.corePersona'),
+});
 
 // ---------------------------------------------------------------------------
 // Scoped styles — 控制台风格的字体与细节（仅作用于本页）
@@ -266,6 +248,9 @@ const PAGE_STYLES = `
 // ---------------------------------------------------------------------------
 
 export default function AgentsPage() {
+  const { t } = useI18n();
+  const navigate = useNavigate();
+  const KERNEL_FILE_LABELS = getKernelFileLabels(t);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [listLoading, setListLoading] = useState(false);
 
@@ -277,8 +262,9 @@ export default function AgentsPage() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [batchDeleting, setBatchDeleting] = useState(false);
 
-  // 当前 Agent（localStorage fallback，Task 25 后可替换为 agentStore）
-  const [currentAgentId, setCurrentAgentId] = useState<string | null>(() => currentAgentStore.get());
+  // 当前 Agent：与全局下拉共用 agentStore.selectedAgent
+  const currentAgentId = useAgentStore((s) => s.selectedAgent);
+  const setSelectedAgent = useAgentStore((s) => s.setSelectedAgent);
 
   // 详情 Modal
   const [detailOpen, setDetailOpen] = useState(false);
@@ -290,6 +276,7 @@ export default function AgentsPage() {
   // 创建 Modal
   const [createOpen, setCreateOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [createStep, setCreateStep] = useState(0);
   const [form] = Form.useForm<CreateAgentFormValues>();
   const modelMode = Form.useWatch('model_mode', form) ?? 'inherit';
 
@@ -316,12 +303,12 @@ export default function AgentsPage() {
       setAgents(Array.isArray(resp.data) ? resp.data : []);
     } catch (error) {
       if (!silent) {
-        message.error(`获取 Agent 列表失败：${extractErrorMessage(error)}`);
+        message.error(`${t('agents.loadFailed', { error: extractErrorMessage(error) })}`);
       }
     } finally {
       setListLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     fetchAgents();
@@ -366,6 +353,7 @@ export default function AgentsPage() {
 
   const openCreateModal = () => {
     form.resetFields();
+    setCreateStep(0);
     setCreateOpen(true);
     void ensureModelsLoaded();
   };
@@ -392,15 +380,35 @@ export default function AgentsPage() {
         if (values.base_url?.trim()) model.base_url = values.base_url.trim();
         if (values.api_key_env?.trim()) model.api_key_env = values.api_key_env.trim();
       }
-      await apiClient.post('/agents', {
+
+      const body: Record<string, unknown> = {
         agent_id: values.agent_id.trim(),
         ...(Object.keys(model).length > 0 ? { model } : {}),
-      });
-      message.success(`Agent「${values.agent_id}」创建成功`);
+      };
+      if (values.description?.trim()) body.description = values.description.trim();
+      if (values.system_prompt?.trim()) body.system_prompt = values.system_prompt.trim();
+      if (values.enable_subagents !== undefined) body.enable_subagents = values.enable_subagents;
+      if (values.inherit_parent_tools !== undefined) body.inherit_parent_tools = values.inherit_parent_tools;
+
+      const createdId = values.agent_id.trim();
+      await apiClient.post('/agents', body);
+      message.success(t('agents.createSuccess', { id: createdId }));
       setCreateOpen(false);
       fetchAgents();
+      // 创建完成后询问是否进入初始化流程：通过对话（bootstrap）修改新 Agent 的提示词。
+      Modal.confirm({
+        title: t('agents.initPromptTitle', { id: createdId }),
+        content: t('agents.initPromptContent'),
+        okText: t('agents.initPromptGo'),
+        cancelText: t('agents.initPromptLater'),
+        okButtonProps: { type: 'primary' },
+        onOk: () => {
+          useAgentStore.getState().setSelectedAgent(createdId);
+          navigate(`/chat/${createdId}`);
+        },
+      });
     } catch (error) {
-      message.error(`创建失败：${extractErrorMessage(error)}`);
+      message.error(`${t('common.operationFailed')}：${extractErrorMessage(error)}`);
     } finally {
       setCreating(false);
     }
@@ -420,37 +428,31 @@ export default function AgentsPage() {
       message.success(successText);
       fetchAgents(true);
     } catch (error) {
-      message.error(`操作失败：${extractErrorMessage(error)}`);
+      message.error(`${t('common.operationFailed')}：${extractErrorMessage(error)}`);
     } finally {
       markRowAction(agentId, null);
     }
   };
 
   const handleStart = (agentId: string) =>
-    runAction(agentId, 'start', () => apiClient.post(`/agents/${agentId}/start`), `Agent「${agentId}」已启动`);
+    runAction(agentId, 'start', () => apiClient.post(`/agents/${agentId}/start`), t('agents.startedSuccess', { id: agentId }));
 
   const handleStop = (agentId: string) =>
-    runAction(agentId, 'stop', () => apiClient.post(`/agents/${agentId}/stop`), `Agent「${agentId}」已停止`);
+    runAction(agentId, 'stop', () => apiClient.post(`/agents/${agentId}/stop`), t('agents.stoppedSuccess', { id: agentId }));
 
   const handleReload = (agentId: string) =>
-    runAction(agentId, 'reload', () => apiClient.post(`/agents/${agentId}/reload`), `Agent「${agentId}」已重载`);
+    runAction(agentId, 'reload', () => apiClient.post(`/agents/${agentId}/reload`), t('agents.reloadedSuccess', { id: agentId }));
 
   const handleDelete = (agentId: string) =>
-    runAction(agentId, 'delete', () => apiClient.delete(`/agents/${agentId}`), `Agent「${agentId}」已删除`);
+    runAction(agentId, 'delete', () => apiClient.delete(`/agents/${agentId}`), t('agents.deletedSuccess', { id: agentId }));
 
   const busyOf = (agentId: string): RowAction | null => rowAction[agentId] ?? null;
 
-  // --- 设为当前 Agent ----------------------------------------------------------
+  // --- 设为当前 Agent（同步全局下拉选择器）---------------------------------
 
   const handleSetCurrent = (agentId: string) => {
-    const next = currentAgentId === agentId ? null : agentId;
-    currentAgentStore.set(next);
-    setCurrentAgentId(next);
-    if (next) {
-      message.success(`已将「${agentId}」设为当前 Agent`);
-    } else {
-      message.info(`已取消「${agentId}」的当前 Agent 标记`);
-    }
+    setSelectedAgent(agentId);
+    message.success(t('agents.setCurrentSuccess', { id: agentId }));
   };
 
   // --- 详情 Modal -------------------------------------------------------------
@@ -508,16 +510,12 @@ export default function AgentsPage() {
     }
     setBatchDeleting(false);
     if (failed.length === 0) {
-      message.success(`已删除 ${selectedIds.length} 个 Agent`);
+      message.success(t('agents.batchDeleteSuccess', { count: selectedIds.length }));
     } else {
-      message.warning(`删除完成：${selectedIds.length - failed.length} 成功，${failed.length} 失败（${failed.join('、')}）`);
+      message.warning(t('agents.batchDeletePartial', { count: selectedIds.length, success: selectedIds.length - failed.length, failed: failed.length, ids: failed.join('、') }));
     }
-    // 清理选择与当前 Agent 标记
+    // 清理选择（当前 agent 被删除时由 refreshAgents 自动回落到第一个）
     setSelectedIds([]);
-    if (currentAgentId && failed.every((id) => id !== currentAgentId) && selectedIds.includes(currentAgentId)) {
-      currentAgentStore.set(null);
-      setCurrentAgentId(null);
-    }
     fetchAgents();
   };
 
@@ -526,7 +524,11 @@ export default function AgentsPage() {
   const filteredAgents = useMemo(() => {
     const keyword = searchText.trim().toLowerCase();
     return agents.filter((agent) => {
-      if (keyword && !agent.agent_id.toLowerCase().includes(keyword)) return false;
+      if (keyword) {
+        const idMatch = agent.agent_id.toLowerCase().includes(keyword);
+        const descMatch = (agent.description ?? '').toLowerCase().includes(keyword);
+        if (!idMatch && !descMatch) return false;
+      }
       if (stateFilter !== undefined) {
         const state = agent.state ?? '__unloaded__';
         if (state !== stateFilter) return false;
@@ -539,15 +541,15 @@ export default function AgentsPage() {
     const present = new Set<string>();
     agents.forEach((agent) => present.add(agent.state ?? '__unloaded__'));
     const base = [
-      { value: 'running', label: '运行中' },
-      { value: 'idle', label: '空闲' },
-      { value: 'paused', label: '已暂停' },
-      { value: 'stopped', label: '已停止' },
-      { value: 'error', label: '错误' },
-      { value: '__unloaded__', label: '未加载' },
+      { value: 'running', label: t('agents.stateRunning') },
+      { value: 'idle', label: t('agents.stateIdle') },
+      { value: 'paused', label: t('agents.statePaused') },
+      { value: 'stopped', label: t('agents.stateStopped') },
+      { value: 'error', label: t('agents.stateError') },
+      { value: '__unloaded__', label: t('agents.stateUnloaded') },
     ];
     return base.filter((option) => present.has(option.value));
-  }, [agents]);
+  }, [agents, t]);
 
   // 统计 chips
   const stats = useMemo(() => {
@@ -571,14 +573,14 @@ export default function AgentsPage() {
             <Space size={6}>
               <span className="agent-id-cell">{value}</span>
               {isCurrent && (
-                <Tooltip title="当前 Agent">
+                <Tooltip title={t('agents.current')}>
                   <StarFilled className="current-mark" style={{ fontSize: 13 }} />
                 </Tooltip>
               )}
               {!record.loaded && (
-                <Tooltip title="工作区未加载">
+                <Tooltip title={t('common.workspaceNotLoaded')}>
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    (未加载)
+                    ({t('agents.stateUnloaded')})
                   </Text>
                 </Tooltip>
               )}
@@ -587,21 +589,42 @@ export default function AgentsPage() {
         },
       },
       {
-        title: '状态',
+        title: t('common.status'),
         dataIndex: 'state',
         key: 'state',
         width: 140,
         render: (state: AgentState | null) => <StateTag state={state} />,
       },
       {
-        title: '会话数',
+        title: t('agents.descriptionLabel'),
+        dataIndex: 'description',
+        key: 'description',
+        width: 200,
+        ellipsis: true,
+        render: (value: string | undefined, record: AgentInfo) => (
+          <Space size={4}>
+            {value ? (
+              <Tooltip title={value}>
+                <Text type="secondary" style={{ fontSize: 12 }}>{value}</Text>
+              </Tooltip>
+            ) : (
+              <Text type="secondary" style={{ fontSize: 12, fontStyle: 'italic' }}>—</Text>
+            )}
+            {record.enable_subagents && (
+              <Tag color="blue" style={{ marginInlineEnd: 0, fontSize: 11 }}>{t('agents.delegationTag')}</Tag>
+            )}
+          </Space>
+        ),
+      },
+      {
+        title: t('agents.sessionCount'),
         dataIndex: 'session_count',
         key: 'session_count',
         width: 90,
         render: (value: number) => <span className="mono">{value ?? 0}</span>,
       },
       {
-        title: '操作',
+        title: t('common.actions'),
         key: 'actions',
         width: 400,
         render: (_: unknown, record: AgentInfo) => {
@@ -614,15 +637,15 @@ export default function AgentsPage() {
 
           return (
             <Space size="small" wrap>
-              <Tooltip title={isCurrent ? '取消当前标记' : '设为当前 Agent'}>
+              <Tooltip title={t('agents.setAsCurrent')}>
                 <Button
                   size="small"
                   type="text"
                   icon={isCurrent ? <CheckCircleFilled style={{ color: '#d97706' }} /> : <StarOutlined />}
-                  disabled={anyBusy}
+                  disabled={anyBusy || isCurrent}
                   onClick={() => handleSetCurrent(record.agent_id)}
                 >
-                  {isCurrent ? '当前' : '设为当前'}
+                  {isCurrent ? t('agents.current') : t('agents.setCurrent')}
                 </Button>
               </Tooltip>
               <Button
@@ -631,9 +654,9 @@ export default function AgentsPage() {
                 icon={<InfoCircleOutlined />}
                 onClick={() => openDetail(record.agent_id)}
               >
-                详情
+                {t('agents.detail')}
               </Button>
-              <Tooltip title="聊天时会自动加载，无需手动启动；停止仅释放内存">
+              <Tooltip title={t('agents.startHint')}>
                 <Button
                   size="small"
                   type="link"
@@ -642,7 +665,7 @@ export default function AgentsPage() {
                   loading={busy === 'start'}
                   onClick={() => handleStart(record.agent_id)}
                 >
-                  启动
+                  {t('agents.start')}
                 </Button>
               </Tooltip>
               <Button
@@ -654,7 +677,7 @@ export default function AgentsPage() {
                 loading={busy === 'stop'}
                 onClick={() => handleStop(record.agent_id)}
               >
-                停止
+                {t('agents.stop')}
               </Button>
               <Button
                 size="small"
@@ -664,14 +687,14 @@ export default function AgentsPage() {
                 loading={busy === 'reload'}
                 onClick={() => handleReload(record.agent_id)}
               >
-                重载
+                {t('agents.reload')}
               </Button>
               <Popconfirm
-                title="删除 Agent"
-                description={`确认删除 Agent「${record.agent_id}」？该操作不可恢复。`}
-                okText="删除"
+                title={t('agents.deleteConfirmTitle')}
+                description={t('agents.deleteConfirmDesc', { id: record.agent_id })}
+                okText={t('common.delete')}
                 okButtonProps={{ danger: true }}
-                cancelText="取消"
+                cancelText={t('common.cancel')}
                 onConfirm={() => handleDelete(record.agent_id)}
               >
                 <Button
@@ -682,7 +705,7 @@ export default function AgentsPage() {
                   disabled={anyBusy}
                   loading={busy === 'delete'}
                 >
-                  删除
+                  {t('common.delete')}
                 </Button>
               </Popconfirm>
             </Space>
@@ -691,7 +714,7 @@ export default function AgentsPage() {
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [rowAction, currentAgentId],
+    [rowAction, currentAgentId, t],
   );
 
   // --- Render ----------------------------------------------------------------
@@ -705,25 +728,25 @@ export default function AgentsPage() {
       {/* 顶部：标题 + 统计 */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: 16 }}>
         <div>
-          <div className="deck-sub">Agent Control Deck</div>
+          <div className="deck-sub">{t('agents.subtitle')}</div>
           <Title level={3} className="deck-title">
-            智能体管理
+            {t('agents.title')}
           </Title>
         </div>
         <Space size={12} wrap>
           <span className="stat-chip">
             <span className="num">{stats.total}</span>
-            <span className="lbl">Agents</span>
+            <span className="lbl">{t('agents.totalAgents')}</span>
           </span>
           <span className="stat-chip">
             <span className="num" style={{ color: '#0e7a5f' }}>
               {stats.running}
             </span>
-            <span className="lbl">Running</span>
+            <span className="lbl">{t('agents.runningAgents')}</span>
           </span>
           <span className="stat-chip">
             <span className="num">{stats.sessions}</span>
-            <span className="lbl">Sessions</span>
+            <span className="lbl">{t('agents.totalSessions')}</span>
           </span>
         </Space>
       </div>
@@ -736,13 +759,13 @@ export default function AgentsPage() {
           <Input
             allowClear
             prefix={<SearchOutlined style={{ color: '#8a998f' }} />}
-            placeholder="按 Agent ID 搜索"
+            placeholder={t('agents.searchPlaceholder')}
             style={{ width: 240 }}
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
           />
           <Select
-            placeholder="状态筛选"
+            placeholder={t('agents.filterByStatus')}
             allowClear
             style={{ width: 140 }}
             value={stateFilter}
@@ -751,21 +774,21 @@ export default function AgentsPage() {
           />
           {selectedIds.length > 0 && (
             <Popconfirm
-              title="批量删除"
-              description={`确认删除选中的 ${selectedIds.length} 个 Agent？该操作不可恢复。`}
-              okText="删除"
+              title={t('agents.batchDelete')}
+              description={t('agents.batchDeleteConfirm', { count: selectedIds.length })}
+              okText={t('common.delete')}
               okButtonProps={{ danger: true }}
-              cancelText="取消"
+              cancelText={t('common.cancel')}
               onConfirm={handleBatchDelete}
             >
               <Button danger icon={<DeleteOutlined />} loading={batchDeleting}>
-                删除所选（{selectedIds.length}）
+                {t('agents.deleteSelected', { count: selectedIds.length })}
               </Button>
             </Popconfirm>
           )}
         </Space>
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
-          创建 Agent
+          {t('agents.createAgent')}
         </Button>
       </div>
 
@@ -775,7 +798,7 @@ export default function AgentsPage() {
         dataSource={filteredAgents}
         rowKey="agent_id"
         loading={listLoading}
-        pagination={{ pageSize: 10, showSizeChanger: false, showTotal: (total) => `共 ${total} 个 Agent` }}
+        pagination={{ pageSize: 10, showSizeChanger: false, showTotal: (total) => t('agents.pagination', { total }) }}
         rowSelection={{
           selectedRowKeys: selectedIds,
           onChange: (keys) => setSelectedIds(keys as string[]),
@@ -790,7 +813,7 @@ export default function AgentsPage() {
           ),
         }}
         rowClassName={(record) => (currentAgentId === record.agent_id ? 'is-current' : '')}
-        locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无匹配的 Agent" /> }}
+        locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('agents.noMatching')} /> }}
       />
 
       {/* 详情 Modal */}
@@ -798,13 +821,13 @@ export default function AgentsPage() {
         title={
           <Space>
             <InfoCircleOutlined />
-            <span>Agent 详情</span>
+            <span>{t('agents.agentDetail')}</span>
             {detail && <Typography.Text code>{detail.agent_id}</Typography.Text>}
           </Space>
         }
         open={detailOpen}
         footer={
-          <Button onClick={() => setDetailOpen(false)}>关闭</Button>
+          <Button onClick={() => setDetailOpen(false)}>{t('common.cancel')}</Button>
         }
         onCancel={() => setDetailOpen(false)}
         width={620}
@@ -813,29 +836,29 @@ export default function AgentsPage() {
         {detailLoading ? (
           <Skeleton active paragraph={{ rows: 6 }} />
         ) : detailError ? (
-          <Alert type="error" showIcon message="获取详情失败" description={detailError} />
+          <Alert type="error" showIcon message={t('agents.detailLoadFailed')} description={detailError} />
         ) : detail ? (
           <>
             <Descriptions column={1} size="small" bordered styles={{ label: { width: 120 } }}>
               <Descriptions.Item label="Agent ID">
                 <span className="agent-id-cell">{detail.agent_id}</span>
               </Descriptions.Item>
-              <Descriptions.Item label="状态">
+              <Descriptions.Item label={t('common.status')}>
                 <Space size={8}>
                   <StateTag state={detail.state} />
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    {detail.loaded ? '工作区已加载' : '工作区未加载'}
-                    {detail.initialized === false ? ' · 未初始化' : ''}
+                    {detail.loaded ? t('common.workspaceLoaded') : t('common.workspaceNotLoaded')}
+                    {detail.initialized === false ? ` · ${t('agents.notInitialized')}` : ''}
                   </Text>
                 </Space>
               </Descriptions.Item>
-              <Descriptions.Item label="会话数">
+              <Descriptions.Item label={t('agents.sessionCount')}>
                 <span className="mono">{detail.session_count}</span>
               </Descriptions.Item>
-              <Descriptions.Item label="创建时间">
+              <Descriptions.Item label={t('agents.createdAt')}>
                 <span className="mono">{formatDateTime(detailCreatedAt)}</span>
               </Descriptions.Item>
-              <Descriptions.Item label="内核文件">
+              <Descriptions.Item label={t('agents.kernelFiles')}>
                 {kernelFiles.length > 0 ? (
                   <Space size={6} wrap>
                     {kernelFiles.map((name) => (
@@ -848,7 +871,7 @@ export default function AgentsPage() {
                     ))}
                   </Space>
                 ) : (
-                  <Text type="secondary">无</Text>
+                  <Text type="secondary">{t('agents.none')}</Text>
                 )}
               </Descriptions.Item>
             </Descriptions>
@@ -856,103 +879,227 @@ export default function AgentsPage() {
             <div style={{ marginTop: 14 }}>
               <Text type="secondary" style={{ fontSize: 12 }}>
                 <FolderOpenOutlined style={{ marginRight: 6 }} />
-                Workspace 目录
+                {t('agents.workspaceDir')}
               </Text>
               <div className="detail-path" style={{ marginTop: 6 }}>
                 {detail.workspace_dir ?? '—'}
               </div>
             </div>
+
+            {(detail.settings?.enable_subagents || (detail.subagents ?? []).length > 0) && (
+              <div style={{ marginTop: 14 }}>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  <BranchesOutlined style={{ marginRight: 6 }} />
+                  {t('agentConfig.mySubagents')}
+                </Text>
+                <Space size={6} wrap style={{ marginTop: 6 }}>
+                  {(detail.subagents ?? []).map((s) => (
+                    <Tag key={s.name} color="blue" icon={<BranchesOutlined />} style={{ marginInlineEnd: 0 }}>
+                      {s.name}
+                      {s.description && (
+                        <Text type="secondary" style={{ fontSize: 11, marginLeft: 4 }}>
+                          {s.description}
+                        </Text>
+                      )}
+                    </Tag>
+                  ))}
+                  {(detail.subagents ?? []).length === 0 && (
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {t('agentConfig.noSubagents')}
+                    </Text>
+                  )}
+                </Space>
+              </div>
+            )}
           </>
         ) : null}
       </Modal>
 
       {/* 创建 Modal */}
       <Modal
-        title="创建 Agent"
+        title={t('agents.createAgent')}
         open={createOpen}
-        okText="创建"
-        cancelText="取消"
-        confirmLoading={creating}
-        onOk={handleCreate}
+        width={560}
+        cancelText={t('common.cancel')}
         onCancel={() => setCreateOpen(false)}
         destroyOnClose
+        footer={
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <div>
+              {createStep > 0 && (
+                <Button onClick={() => setCreateStep(createStep - 1)}>
+                  {t('agents.stepPrev')}
+                </Button>
+              )}
+            </div>
+            <Space>
+              <Button onClick={() => setCreateOpen(false)}>{t('common.cancel')}</Button>
+              {createStep < 2 ? (
+                <Button
+                  type="primary"
+                  onClick={async () => {
+                    try {
+                      // Validate current step fields before advancing.
+                      if (createStep === 0) {
+                        await form.validateFields(['agent_id']);
+                      }
+                      if (createStep === 1 && modelMode === 'existing') {
+                        await form.validateFields(['selected_model']);
+                      }
+                      if (createStep === 1 && modelMode === 'custom') {
+                        await form.validateFields(['provider', 'model_name']);
+                      }
+                      setCreateStep(createStep + 1);
+                    } catch {
+                      // validation failed — stay on current step
+                    }
+                  }}
+                >
+                  {t('agents.stepNext')}
+                </Button>
+              ) : (
+                <Button type="primary" loading={creating} onClick={handleCreate}>
+                  {t('agents.createAgent')}
+                </Button>
+              )}
+            </Space>
+          </div>
+        }
       >
-        <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
-          <Form.Item
-            label="Agent ID"
-            name="agent_id"
-            rules={[
-              { required: true, message: '请输入 Agent ID' },
-              {
-                pattern: /^[a-zA-Z0-9_-]+$/,
-                message: '仅允许字母、数字、下划线和连字符',
-              },
-            ]}
-          >
-            <Input placeholder="例如：assistant-main" autoComplete="off" />
-          </Form.Item>
+        <Steps
+          current={createStep}
+          size="small"
+          style={{ marginBottom: 24 }}
+          items={[
+            { title: t('agents.stepBasicInfo') },
+            { title: t('agents.stepModelConfig') },
+            { title: t('agents.stepCapabilities') },
+          ]}
+        />
 
-          <Divider plain style={{ margin: '4px 0 14px' }}>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              模型配置（可选，默认使用 agent.json 配置）
-            </Text>
-          </Divider>
-
-          <Form.Item label="模型来源" name="model_mode" initialValue="inherit">
-            <Radio.Group>
-              <Radio.Button value="inherit">继承默认</Radio.Button>
-              <Radio.Button value="existing">选择现有模型</Radio.Button>
-              <Radio.Button value="custom">自定义</Radio.Button>
-            </Radio.Group>
-          </Form.Item>
-
-          {modelMode === 'existing' && (
+        <Form form={form} layout="vertical" style={{ marginTop: 8 }}>
+          {/* ──── Step 0: 基础信息 ──── */}
+          <div style={{ display: createStep === 0 ? 'block' : 'none' }}>
             <Form.Item
-              label="现有模型"
-              name="selected_model"
-              rules={[{ required: true, message: '请选择模型' }]}
+              label="Agent ID"
+              name="agent_id"
+              rules={[
+                { required: true, message: t('agents.agentIdRequired') },
+                {
+                  pattern: /^[a-zA-Z0-9_-]+$/,
+                  message: t('agents.agentIdPattern'),
+                },
+              ]}
             >
-              <Select
-                placeholder="从已配置的模型中选择"
-                loading={modelsLoading}
-                showSearch
-                optionFilterProp="label"
-                options={modelCatalog.map((m) => ({
-                  value: `${m.provider}|${m.name}|${m.base_url ?? ''}`,
-                  label: `${m.name}（${m.provider}${m.base_url ? ` · ${m.base_url}` : ''}）`,
-                }))}
-                notFoundContent={modelsLoading ? '加载中…' : '暂无已配置的模型'}
+              <Input placeholder={t('agents.agentIdExample')} autoComplete="off" />
+            </Form.Item>
+
+            <Form.Item
+              label={t('agents.description')}
+              name="description"
+            >
+              <Input.TextArea
+                rows={2}
+                showCount
+                maxLength={200}
+                placeholder={t('agents.descriptionPlaceholder')}
               />
             </Form.Item>
-          )}
 
-          {modelMode === 'custom' && (
-            <>
+            <Form.Item
+              label={t('agents.systemPrompt')}
+              name="system_prompt"
+            >
+              <Input.TextArea
+                rows={4}
+                showCount
+                maxLength={2000}
+                placeholder={t('agents.systemPromptPlaceholder')}
+              />
+            </Form.Item>
+          </div>
+
+          {/* ──── Step 1: 模型配置 ──── */}
+          <div style={{ display: createStep === 1 ? 'block' : 'none' }}>
+            <Form.Item label={t('agents.modelSource')} name="model_mode" initialValue="inherit">
+              <Radio.Group>
+                <Radio.Button value="inherit">{t('agents.inheritDefault')}</Radio.Button>
+                <Radio.Button value="existing">{t('agents.selectExisting')}</Radio.Button>
+                <Radio.Button value="custom">{t('agents.custom')}</Radio.Button>
+              </Radio.Group>
+            </Form.Item>
+
+            {modelMode === 'existing' && (
               <Form.Item
-                label="Provider"
-                name="provider"
-                rules={[{ required: true, message: '请输入 Provider' }]}
+                label={t('agents.existingModel')}
+                name="selected_model"
+                rules={[{ required: modelMode === 'existing', message: t('agents.selectModelRequired') }]}
               >
-                <Input placeholder="例如：openai / qwen" autoComplete="off" />
+                <Select
+                  placeholder={t('agents.selectModelPlaceholder')}
+                  loading={modelsLoading}
+                  showSearch
+                  optionFilterProp="label"
+                  options={modelCatalog.map((m) => ({
+                    value: `${m.provider}|${m.name}|${m.base_url ?? ''}`,
+                    label: `${m.name}（${m.provider}${m.base_url ? ` · ${m.base_url}` : ''}）`,
+                  }))}
+                  notFoundContent={modelsLoading ? '加载中…' : '暂无已配置的模型'}
+                />
               </Form.Item>
+            )}
 
-              <Form.Item
-                label="Model"
-                name="model_name"
-                rules={[{ required: true, message: '请输入模型名' }]}
-              >
-                <Input placeholder="例如：qwen3.6-plus" autoComplete="off" />
-              </Form.Item>
+            {modelMode === 'custom' && (
+              <>
+                <Form.Item
+                  label={t('agents.provider')}
+                  name="provider"
+                  rules={[{ required: modelMode === 'custom', message: t('agents.providerRequired') }]}
+                >
+                  <Input placeholder={t('agents.providerExample')} autoComplete="off" />
+                </Form.Item>
 
-              <Form.Item label="Base URL" name="base_url">
-                <Input placeholder="例如：https://coding.dashscope.aliyuncs.com/v1" autoComplete="off" />
-              </Form.Item>
+                <Form.Item
+                  label={t('agents.model')}
+                  name="model_name"
+                  rules={[{ required: modelMode === 'custom', message: t('agents.modelRequired') }]}
+                >
+                  <Input placeholder={t('agents.modelExample')} autoComplete="off" />
+                </Form.Item>
 
-              <Form.Item label="API Key 环境变量" name="api_key_env">
-                <Input placeholder="例如：AGENTCORE_LLM_API_KEY（可选）" autoComplete="off" />
-              </Form.Item>
-            </>
-          )}
+                <Form.Item label={t('agents.baseURL')} name="base_url">
+                  <Input placeholder={t('agents.baseURLExample')} autoComplete="off" />
+                </Form.Item>
+
+                <Form.Item label={t('agents.apiKeyEnv')} name="api_key_env">
+                  <Input placeholder={t('agents.apiKeyExample')} autoComplete="off" />
+                </Form.Item>
+              </>
+            )}
+          </div>
+
+          {/* ──── Step 2: 能力与协作 ──── */}
+          <div style={{ display: createStep === 2 ? 'block' : 'none' }}>
+            <Form.Item
+              label={t('agents.enableSubagents')}
+              name="enable_subagents"
+              valuePropName="checked"
+              initialValue={false}
+              tooltip={t('agents.enableSubagentsHelp')}
+            >
+              <Switch />
+            </Form.Item>
+
+            <Form.Item
+              label={t('agents.inheritParentTools')}
+              name="inherit_parent_tools"
+              valuePropName="checked"
+              initialValue={true}
+              tooltip={t('agents.inheritParentToolsHelp')}
+            >
+              <Switch />
+            </Form.Item>
+          </div>
         </Form>
       </Modal>
     </div>

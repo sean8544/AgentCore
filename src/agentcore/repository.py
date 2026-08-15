@@ -78,6 +78,7 @@ class ControlPlaneStore:
         # In-memory state — populated from disk below.
         self.agent_states: dict[str, dict] = {}
         self.sessions: dict[str, dict] = {}
+        self.delegations: dict[str, list[dict]] = {}
 
         self._load_all()
 
@@ -94,6 +95,10 @@ class ControlPlaneStore:
     @property
     def _sessions_index_path(self) -> Path:
         return self._sessions_dir / "sessions_index.json"
+
+    @property
+    def _delegations_path(self) -> Path:
+        return self._data_dir / "delegations.json"
 
     # Legacy single-file layout (migrated transparently on load).
     @property
@@ -114,6 +119,34 @@ class ControlPlaneStore:
 
         self._load_agents()
         self._load_sessions()
+        self._load_delegations()
+
+    def _load_delegations(self) -> None:
+        """Load the cross-agent delegation log from disk."""
+        raw = _read_json(self._delegations_path)
+        if raw and isinstance(raw, dict):
+            self.delegations.update(raw)
+
+    def _save_delegations(self) -> None:
+        """Persist the delegation log atomically."""
+        _atomic_write_json(self._delegations_path, self.delegations)
+
+    def append_delegation(self, agent_id: str, record: dict) -> None:
+        """Append a delegation record for *agent_id* (the subagent).
+
+        *record* carries the delegating parent, the task description and
+        a timestamp so a subagent's workspace can surface who asked it to
+        do what.
+        """
+        records = self.delegations.setdefault(agent_id, [])
+        records.append(record)
+        # Keep the log bounded (most recent 200 entries per agent).
+        del records[:-200]
+        self._save_delegations()
+
+    def list_delegations(self, agent_id: str) -> list[dict]:
+        """Return delegation records received by *agent_id* (newest last)."""
+        return list(self.delegations.get(agent_id, []))
 
     def _load_agents(self) -> None:
         raw = _read_json(self._agents_path)

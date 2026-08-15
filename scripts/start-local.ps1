@@ -54,17 +54,21 @@ if (-not (Test-Path $VenvPython)) {
 Write-Step "Python 环境就绪: $VenvPython"
 
 # -----------------------------------------------------------------------------
-# 2. deepagents 本地路径校验
+# 2. deepagents 本地路径校验（支持环境变量 DEEPAGENTS_PATH 覆盖）
 # -----------------------------------------------------------------------------
-$DeepAgentsPath = "D:\code\deepagents\libs\deepagents"
+$DeepAgentsPath = if ($env:DEEPAGENTS_PATH) { $env:DEEPAGENTS_PATH } else { "D:\code\deepagents\libs\deepagents" }
 if (-not (Test-Path $DeepAgentsPath)) {
-    throw "deepagents 本地路径不存在: $DeepAgentsPath —— 请先克隆/检出 deepagents 仓库。"
+    throw "deepagents 本地路径不存在: $DeepAgentsPath —— 请先克隆/检出 deepagents 仓库，或设置环境变量 DEEPAGENTS_PATH。"
 }
 Write-Step "deepagents 路径校验通过: $DeepAgentsPath"
 
 # -----------------------------------------------------------------------------
 # 3. 安装后端依赖
 # -----------------------------------------------------------------------------
+Write-Step "安装 deepagents 本地依赖: $DeepAgentsPath ..."
+& $VenvPython -m pip install -q -e $DeepAgentsPath
+if ($LASTEXITCODE -ne 0) { throw "deepagents 安装失败" }
+
 Write-Step "安装后端依赖 (pip install -e .) ..."
 if ($InstallDevDeps) {
     & $VenvPython -m pip install -q -e ".[dev]"

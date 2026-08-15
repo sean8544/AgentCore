@@ -1,0 +1,8 @@
+{
+  "title": "Tool Management",
+  "subtitle": "{{enabled}}/{{total}} enabled · Changes take effect next conversation",
+  "currentAgent": "Current Agent",
+  "tool": "Tool",
+  "builtin": "Built-in",
+  "loadFailed": "Failed to load tool list"
+}

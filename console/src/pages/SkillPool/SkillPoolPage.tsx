@@ -27,6 +27,7 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import { apiClient } from '../../api/client';
 import { useAgentId } from '../../stores/agentStore';
+import { useI18n } from '../../i18n';
 
 const { Text, Paragraph } = Typography;
 
@@ -45,6 +46,7 @@ interface SkillDetail extends SkillItem {
 }
 
 export default function SkillPoolPage() {
+  const { t } = useI18n();
   const [poolSkills, setPoolSkills] = useState<SkillItem[]>([]);
   const [poolLoading, setPoolLoading] = useState(false);
 
@@ -69,7 +71,7 @@ export default function SkillPoolPage() {
       setPoolSkills(res.data.skills ?? []);
     } catch {
       setPoolSkills([]);
-      antdMessage.error('技能池加载失败');
+      antdMessage.error(t('skillPool.loadFailed'));
     } finally {
       setPoolLoading(false);
     }
@@ -102,7 +104,7 @@ export default function SkillPoolPage() {
       const values = await form.validateFields();
       setSaving(true);
       await apiClient.post('/skills/pool', values);
-      antdMessage.success(`技能 ${values.name} 已创建`);
+      antdMessage.success(t('skillPool.createSuccess', { name: values.name }));
       setCreateOpen(false);
       form.resetFields();
       void loadPool();
@@ -110,7 +112,7 @@ export default function SkillPoolPage() {
       if (err && typeof err === 'object' && 'errorFields' in err) return;
       const detail =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      antdMessage.error(detail || '创建失败，请重试');
+      antdMessage.error(detail || t('common.createFailed'));
     } finally {
       setSaving(false);
     }
@@ -124,7 +126,7 @@ export default function SkillPoolPage() {
       const res = await apiClient.get(`/skills/pool/${name}`);
       setDetail(res.data);
     } catch {
-      antdMessage.error('技能内容加载失败');
+      antdMessage.error(t('skillPool.contentLoadFailed'));
     } finally {
       setDetailLoading(false);
     }
@@ -135,10 +137,10 @@ export default function SkillPoolPage() {
     async (name: string) => {
       try {
         await apiClient.delete(`/skills/pool/${name}`);
-        antdMessage.success(`已删除技能 ${name}`);
+        antdMessage.success(t('skillPool.deleteSuccess', { name }));
         void loadPool();
       } catch {
-        antdMessage.error('删除失败，请重试');
+        antdMessage.error(t('common.deleteFailed'));
       }
     },
     [loadPool],
@@ -150,12 +152,12 @@ export default function SkillPoolPage() {
       setInstalling(name);
       try {
         await apiClient.post(`/skills/pool/${name}/install/${agentId}`);
-        antdMessage.success(`已安装 ${name} 到 ${agentId}`);
+        antdMessage.success(t('skillPool.installSuccess', { name, agent: agentId }));
         void loadAgentSkills();
       } catch (err: unknown) {
         const detail =
           (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-        antdMessage.error(detail || '安装失败，请重试');
+        antdMessage.error(detail || t('skillPool.installFailed'));
       } finally {
         setInstalling(null);
       }
@@ -168,10 +170,10 @@ export default function SkillPoolPage() {
     async (name: string) => {
       try {
         await apiClient.delete(`/skills/agents/${agentId}/${name}`);
-        antdMessage.success(`已从 ${agentId} 卸载 ${name}`);
+        antdMessage.success(t('skillPool.uninstallSuccess', { agent: agentId, name }));
         void loadAgentSkills();
       } catch {
-        antdMessage.error('卸载失败，请重试');
+        antdMessage.error(t('skillPool.uninstallFailed'));
       }
     },
     [agentId, loadAgentSkills],
@@ -181,7 +183,7 @@ export default function SkillPoolPage() {
 
   const agentSkillColumns: ColumnsType<SkillItem> = [
     {
-      title: '技能',
+      title: t('skillPool.skill'),
       dataIndex: 'name',
       width: 180,
       render: (name: string, record) => (
@@ -194,17 +196,17 @@ export default function SkillPoolPage() {
         </Space>
       ),
     },
-    { title: '描述', dataIndex: 'description', ellipsis: true },
+    { title: t('common.description'), dataIndex: 'description', ellipsis: true },
     {
-      title: '操作',
+      title: t('common.actions'),
       width: 90,
       render: (_: unknown, record) => (
         <Popconfirm
-          title={`从 ${agentId} 卸载 ${record.dir_name}？`}
+          title={t('skillPool.uninstallConfirm', { agent: agentId, skill: record.dir_name })}
           onConfirm={() => void uninstallSkill(record.dir_name)}
         >
           <Button size="small" type="link" danger icon={<DeleteOutlined />}>
-            卸载
+            {t('skillPool.uninstall')}
           </Button>
         </Popconfirm>
       ),
@@ -218,9 +220,9 @@ export default function SkillPoolPage() {
         title={
           <Space>
             <RocketOutlined style={{ color: ORANGE }} />
-            <span>全局技能池</span>
+            <span>{t('skillPool.title')}</span>
             <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
-              {poolSkills.length} 个技能 · 安装后复制进 Agent 的 skills/ 目录
+              {t('skillPool.subtitle', { count: poolSkills.length })}
             </Text>
           </Space>
         }
@@ -231,13 +233,13 @@ export default function SkillPoolPage() {
             icon={<AppstoreAddOutlined />}
             onClick={() => setCreateOpen(true)}
           >
-            创建技能
+            {t('skillPool.createSkill')}
           </Button>
         }
       >
         <Spin spinning={poolLoading}>
           {poolSkills.length === 0 && !poolLoading ? (
-            <Empty description="技能池为空" />
+            <Empty description={t('skillPool.emptyPool')} />
           ) : (
             <Row gutter={[16, 16]}>
               {poolSkills.map((skill) => (
@@ -256,7 +258,7 @@ export default function SkillPoolPage() {
                         <Text code strong style={{ fontSize: 13 }}>{skill.dir_name}</Text>
                         {installedNames.has(skill.dir_name) && (
                           <Tag style={{ fontSize: 11, color: ORANGE, borderColor: '#ffd8b3', background: '#fff7ef' }}>
-                            已安装
+                            {t('skillPool.installed')}
                           </Tag>
                         )}
                       </Space>
@@ -265,7 +267,7 @@ export default function SkillPoolPage() {
                         style={{ fontSize: 12, marginBottom: 0 }}
                         ellipsis={{ rows: 2, tooltip: skill.description }}
                       >
-                        {skill.description || '暂无描述'}
+                        {skill.description || t('skillPool.noDescription')}
                       </Paragraph>
                       <Space size={4}>
                         <Button
@@ -274,7 +276,7 @@ export default function SkillPoolPage() {
                           icon={<EyeOutlined />}
                           onClick={() => void viewDetail(skill.dir_name)}
                         >
-                          查看
+                          {t('skillPool.view')}
                         </Button>
                         <Button
                           size="small"
@@ -283,10 +285,10 @@ export default function SkillPoolPage() {
                           loading={installing === skill.dir_name}
                           onClick={() => void installSkill(skill.dir_name)}
                         >
-                          安装到 {agentId}
+                          {t('skillPool.installTo', { agent: agentId })}
                         </Button>
                         <Popconfirm
-                          title={`从技能池删除 ${skill.dir_name}？已安装的副本不受影响。`}
+                          title={t('skillPool.deleteFromPool', { skill: skill.dir_name })}
                           onConfirm={() => void deleteSkill(skill.dir_name)}
                         >
                           <Button size="small" type="link" danger icon={<DeleteOutlined />} />
@@ -307,15 +309,15 @@ export default function SkillPoolPage() {
         title={
           <Space>
             <ThunderboltOutlined style={{ color: ORANGE }} />
-            <span>已安装技能</span>
+            <span>{t('skillPool.installedSkills')}</span>
             <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
-              {agentSkills.length} 个技能
+              {t('skillPool.skillCount', { count: agentSkills.length })}
             </Text>
           </Space>
         }
         extra={
           <Text type="secondary" style={{ fontSize: 12 }}>
-            当前 Agent：<Text code style={{ fontSize: 12 }}>{agentId}</Text>
+            {t('skillPool.currentAgent')}：<Text code style={{ fontSize: 12 }}>{agentId}</Text>
           </Text>
         }
       >
@@ -329,7 +331,7 @@ export default function SkillPoolPage() {
           locale={{
             emptyText: (
               <Text type="secondary">
-                {agentId} 尚未安装技能，从上方技能池选择安装
+                {t('skillPool.notInstalledHint', { agent: agentId })}
               </Text>
             ),
           }}
@@ -338,38 +340,38 @@ export default function SkillPoolPage() {
 
       {/* ── Create modal ── */}
       <Modal
-        title="创建技能"
+        title={t('skillPool.createModalTitle')}
         open={createOpen}
         onCancel={() => setCreateOpen(false)}
         onOk={() => void submitCreate()}
         confirmLoading={saving}
-        okText="创建"
-        cancelText="取消"
+        okText={t('common.create')}
+        cancelText={t('common.cancel')}
         width={640}
         destroyOnHidden
       >
         <Form form={form} layout="vertical">
           <Form.Item
-            label="技能名"
+            label={t('skillPool.skillName')}
             name="name"
             rules={[
-              { required: true, message: '请输入技能名' },
+              { required: true, message: t('skillPool.skillNameRequired') },
               {
                 pattern: /^[a-z0-9][a-z0-9-]{0,63}$/,
-                message: '仅支持小写字母、数字和连字符',
+                message: t('skillPool.skillNamePattern'),
               },
             ]}
           >
-            <Input placeholder="例如 code-review" />
+            <Input placeholder={t('skillPool.nameExample')} />
           </Form.Item>
           <Form.Item
-            label="描述"
+            label={t('skillPool.skillDescription')}
             name="description"
-            rules={[{ required: true, message: '请输入技能描述（用于触发判断）' }]}
+            rules={[{ required: true, message: t('skillPool.skillDescriptionRequired') }]}
           >
-            <Input.TextArea rows={2} placeholder="简述技能的用途与触发场景" />
+            <Input.TextArea rows={2} placeholder={t('skillPool.skillDescriptionPlaceholder')} />
           </Form.Item>
-          <Form.Item label="技能内容（Markdown）" name="content">
+          <Form.Item label={t('skillPool.skillContent')} name="content">
             <Input.TextArea rows={8} placeholder={'# 技能标题\n\n## 何时使用\n\n…'} />
           </Form.Item>
         </Form>
@@ -377,7 +379,7 @@ export default function SkillPoolPage() {
 
       {/* ── Detail modal ── */}
       <Modal
-        title={detail ? `技能：${detail.dir_name}` : '技能详情'}
+        title={detail ? t('skillPool.skillDetailTitle', { name: detail.dir_name }) : t('skillPool.skillDetail')}
         open={detailLoading || detail !== null}
         onCancel={() => setDetail(null)}
         footer={null}

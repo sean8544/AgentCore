@@ -1,0 +1,21 @@
+{
+  "title": "Token Usage",
+  "allAgents": "All Agents",
+  "last7Days": "Last 7 days",
+  "last14Days": "Last 14 days",
+  "last30Days": "Last 30 days",
+  "totalToken": "Total Tokens",
+  "inputToken": "Input Tokens",
+  "outputToken": "Output Tokens",
+  "requestCount": "Requests",
+  "dailyTrend": "Daily Trend",
+  "agentBreakdown": "By Agent",
+  "dailyDetail": "Daily Detail",
+  "date": "Date",
+  "input": "Input",
+  "output": "Output",
+  "total": "Total",
+  "requests": "Requests",
+  "noData": "Loading…",
+  "noDataAvailable": "No data"
+}

@@ -3,6 +3,7 @@ import { Popover, Spin, Typography, message as antdMessage } from 'antd';
 import { ApiOutlined, CheckOutlined, DownOutlined } from '@ant-design/icons';
 import { apiClient } from '../../../api/client';
 import { useAgentId } from '../../../stores/agentStore';
+import { useI18n } from '../../../i18n';
 
 const { Text } = Typography;
 
@@ -29,6 +30,7 @@ const keyOf = (m: ModelItem) => `${m.provider}|${m.name}|${m.base_url ?? ''}`;
  */
 export default function ChatModelSelector() {
   const agentId = useAgentId();
+  const { t } = useI18n();
   const [models, setModels] = useState<ModelItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
@@ -67,7 +69,7 @@ export default function ChatModelSelector() {
           ...(model.base_url ? { base_url: model.base_url } : {}),
           ...(model.api_key_env ? { api_key_env: model.api_key_env } : {}),
         });
-        antdMessage.success('模型已切换，下一轮生效');
+        antdMessage.success(t('chat.modelSwitched'));
         setModels((prev) =>
           prev.map((m) => {
             const users = usersOf(m).filter((id) => id !== agentId);
@@ -81,7 +83,7 @@ export default function ChatModelSelector() {
         setOpen(false);
       } catch (err) {
         const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-        antdMessage.error(detail || '模型切换失败，请重试');
+        antdMessage.error(detail || t('chat.modelSwitchFailed'));
       } finally {
         setSaving(null);
       }
@@ -92,7 +94,7 @@ export default function ChatModelSelector() {
   const content = (
     <div style={{ width: 280 }}>
       <div style={{ marginBottom: 8 }}>
-        <Text strong style={{ fontSize: 13 }}>模型目录</Text>
+        <Text strong style={{ fontSize: 13 }}>{t('chat.modelCatalog')}</Text>
         <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
           {agentId}
         </Text>
@@ -103,7 +105,7 @@ export default function ChatModelSelector() {
         </div>
       ) : models.length === 0 ? (
         <Text type="secondary" style={{ fontSize: 12 }}>
-          暂无已配置的模型，请先在「模型管理」或创建 Agent 时配置
+          {t('chat.noModelsConfigured')}
         </Text>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -156,7 +158,7 @@ export default function ChatModelSelector() {
         marginTop: 8, paddingTop: 6, borderTop: '1px solid #f0f0f0',
         fontSize: 11, color: '#999',
       }}>
-        切换后下一轮对话生效
+        {t('chat.switchNote')}
       </div>
     </div>
   );
@@ -185,7 +187,7 @@ export default function ChatModelSelector() {
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           fontWeight: 500,
         }}>
-          {loading ? '加载中…' : currentModel ? currentModel.name : '未配置模型'}
+          {loading ? t('common.loading') : currentModel ? currentModel.name : t('chat.modelNotConfigured')}
         </span>
         <DownOutlined style={{ fontSize: 9, color: '#999' }} />
       </button>

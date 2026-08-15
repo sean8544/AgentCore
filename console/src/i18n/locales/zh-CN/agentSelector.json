@@ -1,0 +1,4 @@
+{
+  "selectAgent": "选择智能体",
+  "currentAgent": "当前智能体：{{agent}}"
+}

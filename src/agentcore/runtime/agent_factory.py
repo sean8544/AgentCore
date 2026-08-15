@@ -28,22 +28,65 @@ from deepagents.backends import FilesystemBackend, StateBackend
 from deepagents.backends.protocol import BackendProtocol
 from langchain.agents.middleware.types import AgentMiddleware
 from langgraph.graph.state import CompiledStateGraph
+from pydantic import BaseModel, Field
 
 from agentcore.constants import BUILT_IN_TOOLS
 from agentcore.runtime.model_factory import resolve_model
-from agentcore.runtime.workspace import KERNEL_FILE_NAMES, SKILLS_DIR_NAME
+from agentcore.runtime.workspace import (
+    ALL_KERNEL_FILE_NAMES,
+    MEMORY_DIR_NAME,
+    SKILLS_DIR_NAME,
+)
 
-# SDK tool exclusion — the same middleware HarnessProfile.excluded_tools
-# feeds inside create_deep_agent.  Per-agent exclusion cannot be expressed
-# through the HarnessProfile registry (keys are model-keyed and
-# register_harness_profile only merges additively), so the middleware is
-# injected directly via create_deep_agent(middleware=[...]).
-try:
-    from deepagents.middleware._tool_exclusion import (
-        _ToolExclusionMiddleware as _SdkToolExclusionMiddleware,
-    )
-except ImportError:  # pragma: no cover - depends on SDK internals
-    _SdkToolExclusionMiddleware = None  # type: ignore[assignment]
+
+# ---------------------------------------------------------------------------
+# Public tool-exclusion middleware (replaces private SDK import)
+#
+# Uses only public SDK types: ``AgentMiddleware`` and ``ModelRequest.override``.
+# Per-agent exclusion cannot be expressed through the HarnessProfile registry
+# (keys are model-keyed and register_harness_profile only merges additively),
+# so the middleware is injected directly via create_deep_agent(middleware=[...]).
+# ---------------------------------------------------------------------------
+
+
+class _ToolExclusionMiddleware(AgentMiddleware[Any, Any, Any]):
+    """Filter excluded built-in tools from the model request.
+
+    Placed after tool-injecting middleware so it can strip both
+    user-supplied and SDK-injected tools from the visible tool set
+    before the model sees them.
+
+    Uses only public SDK API: ``wrap_model_call`` /
+    ``awrap_model_call`` and ``ModelRequest.override(tools=...)``.
+    """
+
+    def __init__(self, *, excluded: frozenset[str]) -> None:
+        self._excluded = excluded
+
+    @staticmethod
+    def _tool_name(tool: Any) -> str | None:
+        if isinstance(tool, dict):
+            name = tool.get("name")
+            return name if isinstance(name, str) else None
+        return getattr(tool, "name", None)
+
+    def wrap_model_call(self, request: Any, handler: Any) -> Any:
+        if self._excluded:
+            filtered = [
+                t for t in request.tools
+                if self._tool_name(t) not in self._excluded
+            ]
+            request = request.override(tools=filtered)
+        return handler(request)
+
+    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+        if self._excluded:
+            filtered = [
+                t for t in request.tools
+                if self._tool_name(t) not in self._excluded
+            ]
+            request = request.override(tools=filtered)
+        return await handler(request)
 
 logger = logging.getLogger(__name__)
 
@@ -193,10 +236,27 @@ def _create_backend(
             backend_type = BackendType.LOCAL
 
     if backend_type == BackendType.SANDBOX:
-        # SandboxBackend requires additional infra; fall back to StateBackend
-        # (ephemeral, in-graph storage) which is always available.
-        logger.info("Sandbox backend requested — using StateBackend (ephemeral)")
-        return StateBackend()
+        # Task 3.6/3.7: Sandbox backend must be explicitly available;
+        # no silent fallback to host execution.
+        from agentcore.runtime.sandbox import SandboxUnavailableError, get_sandbox_factory
+
+        provider = backend_cfg.get("provider", "e2b")
+        try:
+            factory = get_sandbox_factory(provider)
+            backend_instance = factory.create()
+            if backend_instance is not None:
+                logger.info("Sandbox backend created via %s provider", provider)
+                return backend_instance
+        except SandboxUnavailableError:
+            # Re-raise — the spec requires explicit failure, not silent
+            # fallback.
+            raise
+        except Exception as exc:
+            from agentcore.runtime.sandbox import SandboxUnavailableError as SUE
+            raise SUE(
+                f"Sandbox backend ({provider}) failed to initialise: {exc}. "
+                "The agent will not execute code until a sandbox is available."
+            ) from exc
 
     # No workspace_dir — custom root_dir bypass is intentionally NOT
     # supported; the only safe fallback is the ephemeral StateBackend.
@@ -239,19 +299,56 @@ def _map_permissions(perm_dicts: list[dict[str, Any]]) -> list[FilesystemPermiss
     return result
 
 
-def _map_interrupt_on(rules: list[dict[str, Any]]) -> dict[str, bool] | None:
+#: SDK decision types accepted by ``HumanInTheLoopMiddleware``.
+_ALLOWED_DECISION_TYPES = ("approve", "edit", "reject", "respond")
+
+
+def _map_interrupt_on(rules: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Convert interrupt rule dicts to an ``interrupt_on`` mapping.
 
     Each dict follows the (removed) ``InterruptRule`` shape:
 
     - ``tool_name``: name of the tool
     - ``require_approval``: whether to interrupt
+    - ``allowed_decisions`` (optional): subset of
+      ``("approve", "edit", "reject", "respond")`` restricting which
+      decisions an operator may submit; defaults to all four.
+    - ``description`` (optional): custom approval-request description.
+    - ``args_schema`` (optional): JSON schema applied when ``edit`` is
+      allowed.
+
+    Plain rules map to ``True`` (all decisions open — legacy behaviour).
+    Rules with ``allowed_decisions`` map to the SDK's ``InterruptOnConfig``
+    TypedDict so the approval policy survives the config → SDK translation
+    and is enforced by the middleware.  Invalid decision lists raise
+    ``ValueError`` instead of being silently dropped.
     """
-    interrupt_on: dict[str, bool] = {}
+    interrupt_on: dict[str, Any] = {}
     for rule in rules:
         tool_name = rule.get("tool_name", "")
-        if rule.get("require_approval", False) and tool_name:
+        if not rule.get("require_approval", False) or not tool_name:
+            continue
+        allowed = rule.get("allowed_decisions")
+        if allowed is None:
             interrupt_on[tool_name] = True
+            continue
+        if isinstance(allowed, str):
+            allowed = [allowed]
+        allowed = list(allowed)
+        invalid = [d for d in allowed if d not in _ALLOWED_DECISION_TYPES]
+        if not allowed or invalid:
+            msg = (
+                f"Invalid `allowed_decisions` for tool {tool_name!r}: "
+                f"{allowed!r}. Must be a non-empty subset of "
+                f"{list(_ALLOWED_DECISION_TYPES)}."
+            )
+            raise ValueError(msg)
+        config: dict[str, Any] = {"allowed_decisions": allowed}
+        if rule.get("description"):
+            config["description"] = rule["description"]
+        if rule.get("args_schema"):
+            config["args_schema"] = rule["args_schema"]
+        interrupt_on[tool_name] = config
     return interrupt_on if interrupt_on else None
 
 
@@ -307,6 +404,56 @@ def _resolve_backend_type(settings: dict[str, Any]) -> BackendType:
         return BackendType.LOCAL
 
 
+# ---------------------------------------------------------------------------
+# Planning / TodoList tool (Task 3.4)
+# ---------------------------------------------------------------------------
+
+
+class _TodoItem(BaseModel):
+    """Single todo item (module-level so Pydantic v2 can resolve it)."""
+    id: str = ""
+    content: str = ""
+    status: str = "pending"
+
+
+class _WriteTodosInput(BaseModel):
+    """Schema for the write_todos tool (module-level for Pydantic v2)."""
+    todos: list[_TodoItem] = Field(description="List of todo items")
+
+
+def _create_write_todos_tool() -> Any:
+    """Create a ``write_todos`` tool for structured task planning.
+
+    The SDK does not ship a built-in TodoListMiddleware, so we provide
+    a minimal LangChain tool that the agent can use to maintain a
+    structured todo list.  The todos are stored in-memory (per-agent
+    instance) and surfaced in the conversation context.
+    """
+    from langchain_core.tools import StructuredTool
+
+    # Per-agent todo store — shared across invocations within the same
+    # agent graph instance.
+    _todos: list[dict[str, Any]] = []
+
+    def _write_todos(todos: list[_TodoItem]) -> str:
+        """Replace the current todo list with the provided items."""
+        _todos.clear()
+        for item in todos:
+            _todos.append({
+                "id": item.id,
+                "content": item.content,
+                "status": item.status,
+            })
+        return f"Updated {len(_todos)} todo(s)"
+
+    return StructuredTool.from_function(
+        func=_write_todos,
+        name="write_todos",
+        description="Write or update a structured todo list for task planning.",
+        args_schema=_WriteTodosInput,
+    )
+
+
 # ===================================================================
 # AgentFactory
 # ===================================================================
@@ -344,7 +491,7 @@ class AgentFactory:
         | Config field                    | ``create_deep_agent`` param    |
         |---------------------------------|--------------------------------|
         | ``agent_config["model"]``       | ``model``                      |
-        | ``agent_config["tools"]``       | SDK ``_ToolExclusionMiddleware``|
+        | ``agent_config["tools"]``       | ``_ToolExclusionMiddleware``    |
         | ``settings["permissions"]``     | ``permissions``                |
         | ``settings["interrupt_rules"]`` | ``interrupt_on``               |
         | ``settings["backend"]``         | ``backend``                    |
@@ -363,8 +510,8 @@ class AgentFactory:
             Optional :class:`~agentcore.runtime.workspace.Workspace`
             instance.  When provided, the SDK's built-in ``memory`` /
             ``skills`` mechanisms are wired automatically: the workspace
-            kernel files (``bootstrap.md`` / ``agent.md`` / ``profile.md``
-            / ``soul.md``, when present)
+            kernel files (``bootstrap.md`` / ``agent.md``, plus legacy
+            ``profile.md`` / ``soul.md`` when present)
             are injected via ``memory=[]`` (paths relative to the backend
             root) and the ``skills/`` directory is exposed via
             ``skills=[]``.  Explicit ``memory`` / ``skills`` entries in
@@ -397,19 +544,33 @@ class AgentFactory:
         # Kernel files are loaded from disk at agent startup and appended
         # to the system prompt inside an ``<agent_memory>`` block by the
         # SDK's MemoryMiddleware; the ``skills/`` directory is scanned by
-        # the SkillsMiddleware.  Paths are relative to the backend root
+        # the Skills Middleware.  Paths are relative to the backend root
         # (the workspace directory).
-        if workspace is not None:
+        if workspace is not None or workspace_dir is not None:
+            effective_ws_dir = (
+                workspace.workspace_dir if workspace is not None
+                else workspace_dir
+            )
             if kwargs.get("memory") is None:
                 kernel_paths = [
                     f"/{name}"
-                    for name in KERNEL_FILE_NAMES
-                    if (workspace.workspace_dir / name).exists()
+                    for name in ALL_KERNEL_FILE_NAMES
+                    if (effective_ws_dir / name).exists()
                 ]
-                if kernel_paths:
-                    kwargs["memory"] = kernel_paths
+                # Also load memory files via SDK's MemoryMiddleware.
+                # The agent can update these files using standard
+                # edit_file / write_file tools through the backend.
+                memory_paths = []
+                memory_dir = effective_ws_dir / MEMORY_DIR_NAME
+                if memory_dir.exists():
+                    for mem_file in ["MEMORY.md", "USER.md"]:
+                        if (memory_dir / mem_file).exists():
+                            memory_paths.append(f"/{MEMORY_DIR_NAME}/{mem_file}")
+                all_memory_paths = kernel_paths + memory_paths
+                if all_memory_paths:
+                    kwargs["memory"] = all_memory_paths
             if kwargs.get("skills") is None:
-                skills_dir = workspace.workspace_dir / SKILLS_DIR_NAME
+                skills_dir = effective_ws_dir / SKILLS_DIR_NAME
                 if skills_dir.exists() and skills_dir.is_dir():
                     kwargs["skills"] = [f"/{SKILLS_DIR_NAME}/"]
 
@@ -448,24 +609,26 @@ class AgentFactory:
             kwargs.pop("middleware", []) or []
         )
         if excluded:
-            if _SdkToolExclusionMiddleware is not None:
-                logger.info(
-                    "Excluding disabled built-in tools via SDK "
-                    "tool-exclusion middleware: %s",
-                    sorted(excluded),
-                )
-                extra_middleware.append(
-                    _SdkToolExclusionMiddleware(excluded=excluded)
-                )
-            else:  # pragma: no cover - SDK internals changed
-                logger.warning(
-                    "deepagents _ToolExclusionMiddleware unavailable — "
-                    "tool exclusion NOT applied (wanted: %s)",
-                    sorted(excluded),
-                )
+            logger.info(
+                "Excluding disabled built-in tools via "
+                "tool-exclusion middleware: %s",
+                sorted(excluded),
+            )
+            extra_middleware.append(
+                _ToolExclusionMiddleware(excluded=excluded)
+            )
 
-        # --- Custom tools (additive) ---------------------------------
-        custom_tools = settings.get("custom_tools") or kwargs.pop("tools", None)
+        # --- Planning / TodoList (Task 3.4) --------------------------
+        # Opt-in via ``settings.enable_planning: true``.  Adds a
+        # ``write_todos`` tool so the agent can maintain a structured
+        # todo list across turns.  The SDK does not ship a built-in
+        # TodoListMiddleware, so we provide a minimal implementation as
+        # a custom tool.
+        custom_tools: list[Any] | None = settings.get("custom_tools") or kwargs.pop("tools", None)
+        if settings.get("enable_planning"):
+            custom_tools = list(custom_tools or [])
+            custom_tools.append(_create_write_todos_tool())
+            logger.info("Planning enabled: write_todos tool added")
 
         # --- MCP tools (optional, from workspace mcp.json) -----------
         # Enabled MCP servers are probed and their LangChain tools merged
@@ -493,8 +656,20 @@ class AgentFactory:
             kwargs["subagents"] = subagents
 
         # --- Assemble & create ---------------------------------------
+        system_prompt = settings.get("system_prompt") or None
+        if settings.get("enable_planning"):
+            # Guide the model to actually use write_todos for multi-step
+            # tasks so the todo breakdown is visible in the chat stream.
+            _plan_hint = (
+                "\n\n## 任务拆解要求\n"
+                "对于多步骤任务，先使用 write_todos 工具创建结构化任务计划，"
+                "拆解执行步骤并标记状态，再逐步执行。"
+            )
+            system_prompt = (
+                f"{system_prompt}{_plan_hint}" if system_prompt else _plan_hint
+            )
         create_kwargs: dict[str, Any] = {
-            "system_prompt": settings.get("system_prompt") or None,
+            "system_prompt": system_prompt,
             "permissions": permissions,
             "backend": backend,
             "interrupt_on": interrupt_on,

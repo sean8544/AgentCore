@@ -13,6 +13,7 @@ import { ThunderboltOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { apiClient } from '../../api/client';
 import { useAgentId } from '../../stores/agentStore';
+import { useI18n } from '../../i18n';
 
 const { Text } = Typography;
 
@@ -28,6 +29,7 @@ interface ToolItem {
 }
 
 export default function ToolsPage() {
+  const { t } = useI18n();
   const agentId = useAgentId();
   const [tools, setTools] = useState<ToolItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -41,7 +43,7 @@ export default function ToolsPage() {
       setTools(res.data.tools ?? []);
     } catch {
       setTools([]);
-      antdMessage.error('工具列表加载失败');
+      antdMessage.error(t('tools.loadFailed'));
     } finally {
       setLoading(false);
     }
@@ -58,9 +60,9 @@ export default function ToolsPage() {
       try {
         await apiClient.put(`/agents/${agentId}/tools/${name}`, { enabled });
         setTools((prev) => prev.map((t) => (t.name === name ? { ...t, enabled } : t)));
-        antdMessage.success(enabled ? `已启用 ${name}` : `已禁用 ${name}`);
+        antdMessage.success(enabled ? t('common.enabledSuccess', { name }) : t('common.disabledSuccess', { name }));
       } catch {
-        antdMessage.error('操作失败，请重试');
+        antdMessage.error(t('common.operationFailed'));
       } finally {
         setToggling(null);
       }
@@ -72,7 +74,7 @@ export default function ToolsPage() {
 
   const columns: ColumnsType<ToolItem> = [
     {
-      title: '工具',
+      title: t('tools.tool'),
       dataIndex: 'name',
       width: 220,
       render: (name: string, record) => (
@@ -80,26 +82,26 @@ export default function ToolsPage() {
           <Text code style={{ fontSize: 13 }}>{name}</Text>
           {record.builtin && (
             <Tag style={{ fontSize: 11, color: ORANGE, borderColor: '#ffd8b3', background: '#fff7ef' }}>
-              内置
+              {t('tools.builtin')}
             </Tag>
           )}
         </Space>
       ),
     },
-    { title: '说明', dataIndex: 'description', ellipsis: true },
+    { title: t('common.description'), dataIndex: 'description', ellipsis: true },
     {
-      title: '状态',
+      title: t('common.status'),
       dataIndex: 'enabled',
       width: 100,
       render: (enabled: boolean) => (
         <Badge
           status={enabled ? 'success' : 'default'}
-          text={<Text type="secondary" style={{ fontSize: 12 }}>{enabled ? '已启用' : '已禁用'}</Text>}
+          text={<Text type="secondary" style={{ fontSize: 12 }}>{enabled ? t('common.enabled') : t('common.disabled')}</Text>}
         />
       ),
     },
     {
-      title: '开关',
+      title: t('common.actions'),
       width: 80,
       align: 'center',
       render: (_, record) => (
@@ -120,15 +122,15 @@ export default function ToolsPage() {
         title={
           <Space>
             <ThunderboltOutlined style={{ color: ORANGE }} />
-            <span>工具管理</span>
+            <span>{t('tools.title')}</span>
             <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
-              {enabledCount}/{tools.length} 已启用 · 变更在下次对话生效
+              {t('tools.subtitle', { enabled: enabledCount, total: tools.length })}
             </Text>
           </Space>
         }
         extra={
           <Text type="secondary" style={{ fontSize: 12 }}>
-            当前 Agent：<Text code style={{ fontSize: 12 }}>{agentId}</Text>
+            {t('tools.currentAgent')}：<Text code style={{ fontSize: 12 }}>{agentId}</Text>
           </Text>
         }
       >

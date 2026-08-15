@@ -1,0 +1,19 @@
+{
+  "title": "Agent Stats",
+  "totalAgents": "Total Agents",
+  "runningLoaded": "Running / Loaded",
+  "totalSessions": "Total Sessions",
+  "totalMessages": "Total Messages",
+  "agentDetail": "Agent Detail",
+  "loaded": "Loaded",
+  "ready": "Ready",
+  "unloaded": "Unloaded",
+  "sessionCount": "Sessions",
+  "messageCount": "Messages",
+  "skillCount": "Skills",
+  "running": "Running",
+  "idle": "Idle",
+  "started": "Started",
+  "stopped": "Stopped",
+  "error": "Error"
+}

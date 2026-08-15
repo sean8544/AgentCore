@@ -8,6 +8,8 @@ version = "0.1.0"
 description = "Agent harness control plane core domain models"
 readme = "README.md"
 requires-python = ">=3.11"
+# deepagents 为本地路径依赖，由启动脚本通过 DEEPAGENTS_PATH 环境变量安装
+# 手动安装: pip install -e /path/to/deepagents/libs/deepagents
 dependencies = [
 	"fastapi>=0.112.0",
 	"pydantic>=2.8.0",
@@ -15,7 +17,6 @@ dependencies = [
 	"python-multipart>=0.0.9",
 	"langchain-openai>=1.0.0",
 	"langgraph-checkpoint-sqlite>=2.0.0",
-	"deepagents @ file:///D:/code/deepagents/libs/deepagents",
 ]
 
 [project.optional-dependencies]

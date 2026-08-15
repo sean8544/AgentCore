@@ -25,6 +25,7 @@ from agentcore.runtime.multi_agent_manager import (
 from agentcore.runtime import agent_router, chat_router, files_router
 from agentcore.runtime import envs_router, models_router, stats_router
 from agentcore.runtime import mcp_router, skills_router
+from agentcore.runtime import security_router
 from agentcore.runtime import token_router, tools_router
 from agentcore.service import AgentService
 
@@ -167,6 +168,9 @@ app.include_router(mcp_router.router)
 
 # Register the skill pool router (/api/skills).
 app.include_router(skills_router.router)
+
+# Register the global security settings router (/api/security).
+app.include_router(security_router.router)
 
 
 @app.get("/health")

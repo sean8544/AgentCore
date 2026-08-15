@@ -1,9 +1,14 @@
-"""Agent runtime manager: lifecycle management for deep agent instances.
+"""Agent runtime manager: lifecycle state management for deep agent instances.
 
 This module provides :class:`AgentRuntime`, the central coordinator for
-creating, controlling, and invoking running agent instances.  Each agent
-is tracked via an :class:`AgentInstance` dataclass whose state transitions
-are governed by a strict state machine.
+tracking agent lifecycle states.  Each agent is tracked via an
+:class:`AgentInstance` dataclass whose state transitions are governed by
+a strict state machine.
+
+**Important**: The actual agent graph (``CompiledStateGraph``) is NOT
+created here.  Graph creation and caching is handled by
+:func:`~agentcore.runtime.chat_router._resolve_agent_graph`.  This class
+is a pure state manager for the control plane.
 
 Lifecycle semantics
 -------------------
@@ -13,11 +18,10 @@ inside the serving request and returns; between requests nothing runs.
 
 * ``idle``    — the agent has **no in-flight request**; this is the
   normal resting state, not an error or "not started" condition.
-* ``start``   — *warm-up*: pre-build the agent graph / load the workspace
-  into memory so the first real request is faster.
-* ``stop``    — *unload*: release in-memory state (workspace + cached
-  graph); on-disk files are preserved.  The agent is re-materialised
-  lazily on the next use.
+* ``start``   — *warm-up*: mark the agent as active so the control plane
+  knows it's ready.  The actual graph is created lazily on first chat.
+* ``stop``    — *unload*: release in-memory state; on-disk files are
+  preserved.  The agent is re-materialised lazily on the next use.
 """
 
 from __future__ import annotations
@@ -27,7 +31,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, AsyncIterator
+from typing import Any
 
 from langgraph.graph.state import CompiledStateGraph
 
@@ -55,7 +59,7 @@ _VALID_TRANSITIONS: dict[AgentState, frozenset[AgentState]] = {
     AgentState.IDLE: frozenset({AgentState.RUNNING, AgentState.STOPPED, AgentState.ERROR}),
     AgentState.RUNNING: frozenset({AgentState.PAUSED, AgentState.STOPPED, AgentState.ERROR}),
     AgentState.PAUSED: frozenset({AgentState.RUNNING, AgentState.STOPPED, AgentState.ERROR}),
-    AgentState.STOPPED: frozenset({AgentState.ERROR}),
+    AgentState.STOPPED: frozenset({AgentState.IDLE, AgentState.ERROR}),
     AgentState.ERROR: frozenset({AgentState.IDLE}),
 }
 
@@ -215,26 +219,29 @@ class AgentRuntime:
     async def start_agent(
         self,
         agent_id: str,
-        agent_config: dict[str, Any],
+        agent_config: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> AgentInstance:
-        """Create and start an agent instance.
+        """Mark an agent as running (warm-up state transition).
+
+        The actual agent graph is created lazily by
+        :func:`~agentcore.runtime.chat_router._resolve_agent_graph` on the
+        first chat request.  This method only manages the lifecycle state
+        so the control plane knows which agents are "active".
 
         If an instance with the same *agent_id* already exists in
-        :attr:`AgentState.IDLE` or :attr:`AgentState.ERROR` state it will
-        be restarted (a new agent graph is created).  If it is already
-        running or paused, the existing instance is returned as-is.
+        :attr:`AgentState.RUNNING` or :attr:`AgentState.PAUSED` state,
+        the existing instance is returned as-is.
 
         Parameters
         ----------
         agent_id:
             Unique identifier for this agent instance.
         agent_config:
-            The agent configuration dict (from the workspace's
-            ``agent.json``) used when creating the agent graph.
+            The agent configuration dict (accepted for API compatibility
+            but not used for graph creation here).
         **kwargs:
-            Extra keyword arguments forwarded to
-            :meth:`AgentFactory.create_agent`.
+            Extra keyword arguments (accepted for API compatibility).
 
         Returns
         -------
@@ -256,19 +263,8 @@ class AgentRuntime:
                 )
                 return existing
 
-            # Create the deep agent graph via the factory.
-            try:
-                agent_graph = self._factory.create_agent(agent_config, **kwargs)
-            except Exception as exc:
-                logger.exception("Failed to create agent %s", agent_id)
-                # If there is an existing (idle/error) instance, mark it error.
-                if existing is not None:
-                    self._transition(existing, AgentState.ERROR, error=str(exc))
-                raise
-
             if existing is not None:
-                # Reuse the metadata object (idle / error → running).
-                existing.agent = agent_graph
+                # Reuse the metadata object (idle / error / stopped → running).
                 existing.last_active_at = datetime.now()
                 self._transition(existing, AgentState.RUNNING)
                 return existing
@@ -277,12 +273,12 @@ class AgentRuntime:
             instance = AgentInstance(
                 agent_id=agent_id,
                 state=AgentState.RUNNING,
-                agent=agent_graph,
+                agent=None,  # Graph is managed by chat_router
                 last_active_at=datetime.now(),
             )
             self._instances[agent_id] = instance
             self._persist(instance)
-            logger.info("Agent %s started", agent_id)
+            logger.info("Agent %s started (state-only, graph deferred to chat_router)", agent_id)
             return instance
 
     async def stop_agent(self, agent_id: str) -> None:
@@ -353,100 +349,3 @@ class AgentRuntime:
     def list_agents(self) -> list[AgentInstance]:
         """Return all tracked agent instances."""
         return list(self._instances.values())
-
-    # ------------------------------------------------------------------
-    # Invocation API
-    # ------------------------------------------------------------------
-
-    async def invoke(self, agent_id: str, message: str, **kwargs: Any) -> Any:
-        """Synchronously invoke an agent (runs the full graph to completion).
-
-        Parameters
-        ----------
-        agent_id:
-            The agent to invoke.  Must be in :attr:`AgentState.RUNNING`.
-        message:
-            The user message string.
-        **kwargs:
-            Extra keyword arguments forwarded to the agent's ``invoke``
-            method (e.g. ``config``, ``recursion_limit``).
-
-        Returns
-        -------
-        Any
-            The agent graph output.
-        """
-        async with self._lock:
-            instance = self._get_or_raise(agent_id)
-            if instance.state != AgentState.RUNNING:
-                raise RuntimeError(
-                    f"Agent {agent_id!r} is not running (state={instance.state.value})"
-                )
-            if instance.agent is None:
-                raise RuntimeError(f"Agent {agent_id!r} has no graph handle")
-
-            agent_graph = instance.agent
-
-        # Execute outside the lock to allow concurrent state operations.
-        try:
-            input_data = {"messages": message}
-            result = await agent_graph.ainvoke(input_data, **kwargs)
-        except Exception as exc:
-            async with self._lock:
-                self._transition(instance, AgentState.ERROR, error=str(exc))
-            raise
-
-        async with self._lock:
-            instance.last_active_at = datetime.now()
-            self._persist(instance)
-
-        return result
-
-    async def stream(
-        self, agent_id: str, message: str, **kwargs: Any
-    ) -> AsyncIterator[Any]:
-        """Asynchronously stream agent output chunks.
-
-        Yields each chunk produced by the agent graph's ``astream`` method.
-        The instance's ``last_active_at`` is updated after the stream
-        completes.
-
-        Parameters
-        ----------
-        agent_id:
-            The agent to invoke.  Must be in :attr:`AgentState.RUNNING`.
-        message:
-            The user message string.
-        **kwargs:
-            Extra keyword arguments forwarded to the agent's ``astream``
-            method.
-
-        Yields
-        ------
-        Any
-            Individual output chunks from the agent graph.
-        """
-        async with self._lock:
-            instance = self._get_or_raise(agent_id)
-            if instance.state != AgentState.RUNNING:
-                raise RuntimeError(
-                    f"Agent {agent_id!r} is not running (state={instance.state.value})"
-                )
-            if instance.agent is None:
-                raise RuntimeError(f"Agent {agent_id!r} has no graph handle")
-
-            agent_graph = instance.agent
-
-        # Stream outside the lock.
-        try:
-            input_data = {"messages": message}
-            async for chunk in agent_graph.astream(input_data, **kwargs):
-                yield chunk
-        except Exception as exc:
-            async with self._lock:
-                self._transition(instance, AgentState.ERROR, error=str(exc))
-            raise
-
-        async with self._lock:
-            instance.last_active_at = datetime.now()
-            self._persist(instance)

@@ -1,0 +1,4 @@
+{
+  "selectAgent": "Select Agent",
+  "currentAgent": "Current Agent: {{agent}}"
+}

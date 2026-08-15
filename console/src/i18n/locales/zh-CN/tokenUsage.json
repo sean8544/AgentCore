@@ -1,0 +1,21 @@
+{
+  "title": "Token 消耗",
+  "allAgents": "全部 Agent",
+  "last7Days": "近 7 天",
+  "last14Days": "近 14 天",
+  "last30Days": "近 30 天",
+  "totalToken": "总 Token",
+  "inputToken": "输入 Token",
+  "outputToken": "输出 Token",
+  "requestCount": "请求次数",
+  "dailyTrend": "每日趋势",
+  "agentBreakdown": "按 Agent 统计",
+  "dailyDetail": "每日明细",
+  "date": "日期",
+  "input": "输入",
+  "output": "输出",
+  "total": "合计",
+  "requests": "请求数",
+  "noData": "加载中…",
+  "noDataAvailable": "暂无数据"
+}

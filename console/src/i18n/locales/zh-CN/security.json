@@ -1,0 +1,17 @@
+{
+  "title": "安全配置",
+  "subtitle": "全局安全策略，对所有 Agent 生效",
+  "approvalCard": "危险操作审批",
+  "approvalDesc": "开启后，被选中的工具在任意 Agent 中被调用时，都会先请求人工审批，批准后才继续执行。",
+  "enableApproval": "启用危险操作审批",
+  "enableApprovalHelp": "关闭后，所有 Agent 直接执行工具，不再请求审批",
+  "approvalTools": "需要审批的工具",
+  "approvalToolsPlaceholder": "选择需要人工审批的危险工具",
+  "globalNote": "全局配置：所有 Agent 统一遵守，无需逐 Agent 设置",
+  "save": "保存配置",
+  "saveSuccess": "安全配置已保存",
+  "toolDelete": "删除文件 (delete)",
+  "toolWriteFile": "写入文件 (write_file)",
+  "toolEditFile": "编辑文件 (edit_file)",
+  "toolExecute": "执行命令 (execute)"
+}

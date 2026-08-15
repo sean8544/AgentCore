@@ -30,6 +30,7 @@ API key lookup order:
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 from typing import Any
@@ -98,15 +99,24 @@ def _cache_key(
     base_url: str | None,
     api_key: str | None,
     temperature: float | None,
+    headers: dict[str, str] | None = None,
+    extra_body: dict[str, Any] | None = None,
 ) -> str:
     key_digest = (
         hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
         if api_key
         else "-"
     )
+    opts_digest = hashlib.sha256(
+        json.dumps(
+            {"headers": headers or {}, "extra_body": extra_body or {}},
+            sort_keys=True,
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()[:12]
     return (
         f"{provider}:{name}:{base_url or ''}:{key_digest}"
-        f":{temperature if temperature is not None else ''}"
+        f":{temperature if temperature is not None else ''}:{opts_digest}"
     )
 
 
@@ -158,14 +168,44 @@ def build_chat_model(model_cfg: dict[str, Any] | str | None) -> BaseChatModel | 
     if not isinstance(temperature, (int, float)):
         temperature = None
 
+    # Custom per-request headers (e.g. ``x-app: cli``) and extra generation
+    # parameters (e.g. ``enable_thinking``) forwarded verbatim to the
+    # OpenAI-compatible endpoint.
+    raw_headers = model_cfg.get("headers")
+    if isinstance(raw_headers, dict):
+        headers = {str(k): str(v) for k, v in raw_headers.items() if str(k).strip()}
+    elif isinstance(raw_headers, list):
+        headers = {
+            str(h.get("key") or ""): str(h.get("value") or "")
+            for h in raw_headers
+            if isinstance(h, dict) and str(h.get("key") or "").strip()
+        }
+    else:
+        headers = {}
+    raw_extra_body = model_cfg.get("extra_body")
+    extra_body = dict(raw_extra_body) if isinstance(raw_extra_body, dict) else {}
+
+    # Without a key and without a custom endpoint we cannot construct an
+    # OpenAI client eagerly — ``openai`` raises at construction time when
+    # no credentials are present.  Fall back to the string path so the
+    # caller's ``init_chat_model`` can resolve keys from its own sources
+    # (env vars) at graph-build time.
+    if not api_key and not resolved_base_url:
+        logger.debug(
+            "No api_key/base_url for %s:%s — deferring to string resolution",
+            provider,
+            name,
+        )
+        return None
+
     # Reuse a previously built client when the identity (provider / model /
     # endpoint / key / temperature) is unchanged.
     cache_key = _cache_key(
-        provider, name, resolved_base_url, api_key, temperature
+        provider, name, resolved_base_url, api_key, temperature, headers, extra_body
     )
     cached = _model_cache.get(cache_key)
     if cached is not None:
-        logger.debug("Reusing cached ChatOpenAI client (%s)", cache_key)
+        logger.debug("Reusing cached chat-model client (%s)", cache_key)
         return cached
 
     kwargs: dict[str, Any] = {"model": name}
@@ -175,6 +215,43 @@ def build_chat_model(model_cfg: dict[str, Any] | str | None) -> BaseChatModel | 
         kwargs["api_key"] = api_key
     if temperature is not None:
         kwargs["temperature"] = float(temperature)
+    if headers:
+        kwargs["default_headers"] = headers
+    if extra_body:
+        kwargs["extra_body"] = extra_body
+
+    # DeepSeek endpoints: langchain-openai's ChatOpenAI deliberately ignores
+    # DeepSeek's non-standard ``reasoning_content`` streaming delta (thinking
+    # text) — use the official ChatDeepSeek wrapper instead so reasoning and
+    # usage metadata flow through to the SSE stream.
+    is_deepseek = provider == "deepseek" or (
+        bool(resolved_base_url) and "deepseek.com" in (resolved_base_url or "")
+    )
+    if is_deepseek:
+        try:
+            from langchain_deepseek import ChatDeepSeek
+
+            # ChatDeepSeek uses ``api_base`` instead of ``base_url`` and does
+            # not accept ``default_headers`` / ``extra_body`` in older builds.
+            deepseek_kwargs = {"model": name, "api_key": api_key or ""}
+            if resolved_base_url:
+                deepseek_kwargs["api_base"] = resolved_base_url
+            if temperature is not None:
+                deepseek_kwargs["temperature"] = float(temperature)
+            logger.info(
+                "Building ChatDeepSeek(model=%s, api_base=%s, api_key=%s)",
+                name,
+                resolved_base_url or "<default>",
+                "<set>" if api_key else "<unset>",
+            )
+            model = ChatDeepSeek(**deepseek_kwargs)
+            _model_cache[cache_key] = model
+            return model
+        except ImportError:
+            logger.warning(
+                "langchain-deepseek is not installed; falling back to ChatOpenAI "
+                "(reasoning_content will not stream). Run: pip install langchain-deepseek",
+            )
 
     logger.info(
         "Building ChatOpenAI(model=%s, base_url=%s, api_key=%s)",
@@ -200,9 +277,9 @@ def build_model_string(model_cfg: dict[str, Any] | str | None) -> str | None:
         return model_cfg or None
     provider = model_cfg.get("provider")
     name = model_cfg.get("name")
-    if not provider or not name:
+    if not name:
         return None
-    return f"{provider}:{name}"
+    return f"{provider}:{name}" if provider else name
 
 
 def resolve_model(model_cfg: dict[str, Any] | str | None) -> BaseChatModel | str | None:

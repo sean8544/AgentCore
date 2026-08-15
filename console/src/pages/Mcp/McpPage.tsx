@@ -27,6 +27,7 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import { apiClient } from '../../api/client';
 import { useAgentId } from '../../stores/agentStore';
+import { useI18n } from '../../i18n';
 
 const { Text } = Typography;
 
@@ -56,6 +57,7 @@ interface McpTool {
 }
 
 export default function McpPage() {
+  const { t } = useI18n();
   const agentId = useAgentId();
   const [servers, setServers] = useState<McpServer[]>([]);
   const [loading, setLoading] = useState(false);
@@ -75,7 +77,7 @@ export default function McpPage() {
       setServers(res.data.servers ?? []);
     } catch {
       setServers([]);
-      antdMessage.error('MCP 服务器列表加载失败');
+      antdMessage.error(t('mcp.loadFailed'));
     } finally {
       setLoading(false);
     }
@@ -92,7 +94,7 @@ export default function McpPage() {
       const values = await form.validateFields();
       setSaving(true);
       await apiClient.post(`/agents/${agentId}/mcp`, values);
-      antdMessage.success(`已添加 MCP 服务器 ${values.server_id}`);
+      antdMessage.success(t('mcp.addSuccess', { id: values.server_id }));
       setAddOpen(false);
       form.resetFields();
       void loadServers();
@@ -100,7 +102,7 @@ export default function McpPage() {
       if (err && typeof err === 'object' && 'errorFields' in err) return; // validation
       const detail =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      antdMessage.error(detail || '添加失败，请重试');
+      antdMessage.error(detail || t('mcp.addFailed'));
     } finally {
       setSaving(false);
     }
@@ -113,9 +115,9 @@ export default function McpPage() {
         const res = await apiClient.patch(`/agents/${agentId}/mcp/${serverId}/toggle`);
         const updated: McpServer = res.data.server;
         setServers((prev) => prev.map((s) => (s.server_id === serverId ? updated : s)));
-        antdMessage.success(updated.enabled ? `已启用 ${serverId}` : `已禁用 ${serverId}`);
+        antdMessage.success(updated.enabled ? t('common.enabledSuccess', { name: serverId }) : t('common.disabledSuccess', { name: serverId }));
       } catch {
-        antdMessage.error('操作失败，请重试');
+        antdMessage.error(t('common.operationFailed'));
       }
     },
     [agentId],
@@ -126,10 +128,10 @@ export default function McpPage() {
     async (serverId: string) => {
       try {
         await apiClient.delete(`/agents/${agentId}/mcp/${serverId}`);
-        antdMessage.success(`已删除 ${serverId}`);
+        antdMessage.success(t('common.deletedSuccess', { name: serverId }));
         void loadServers();
       } catch {
-        antdMessage.error('删除失败，请重试');
+        antdMessage.error(t('mcp.deleteFailed'));
       }
     },
     [agentId, loadServers],
@@ -144,12 +146,12 @@ export default function McpPage() {
         const data = res.data;
         if (data.ok) {
           setToolsCache((prev) => ({ ...prev, [serverId]: data.tools ?? [] }));
-          antdMessage.success(`连接成功，发现 ${data.tool_count ?? 0} 个工具`);
+          antdMessage.success(t('mcp.testSuccess', { count: data.tool_count ?? 0 }));
         } else {
-          antdMessage.warning(data.error || '连接失败');
+          antdMessage.warning(data.error || t('mcp.testFailed'));
         }
       } catch {
-        antdMessage.error('连接测试请求失败');
+        antdMessage.error(t('mcp.testRequestFailed'));
       } finally {
         setTesting(null);
       }
@@ -169,7 +171,7 @@ export default function McpPage() {
         const detail =
           (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
         setToolsCache((prev) => ({ ...prev, [serverId]: [] }));
-        antdMessage.warning(detail || '无法获取工具列表');
+        antdMessage.warning(detail || t('mcp.toolsLoadFailed'));
       } finally {
         setToolsLoading(null);
       }
@@ -181,7 +183,7 @@ export default function McpPage() {
 
   const columns: ColumnsType<McpServer> = [
     {
-      title: '服务器',
+      title: t('mcp.server'),
       dataIndex: 'name',
       width: 220,
       render: (_: string, record) => (
@@ -192,7 +194,7 @@ export default function McpPage() {
       ),
     },
     {
-      title: '传输方式',
+      title: t('mcp.transport'),
       dataIndex: 'transport',
       width: 150,
       render: (t: string) => {
@@ -201,7 +203,7 @@ export default function McpPage() {
       },
     },
     {
-      title: '端点',
+      title: t('mcp.endpoint'),
       key: 'endpoint',
       ellipsis: true,
       render: (_: unknown, record) => (
@@ -211,23 +213,23 @@ export default function McpPage() {
       ),
     },
     {
-      title: '状态',
+      title: t('common.status'),
       dataIndex: 'enabled',
       width: 90,
       render: (enabled: boolean) => (
         <Badge
           status={enabled ? 'success' : 'default'}
-          text={<Text type="secondary" style={{ fontSize: 12 }}>{enabled ? '已启用' : '已禁用'}</Text>}
+          text={<Text type="secondary" style={{ fontSize: 12 }}>{enabled ? t('common.enabled') : t('common.disabled')}</Text>}
         />
       ),
     },
     {
-      title: '操作',
+      title: t('common.actions'),
       key: 'actions',
       width: 260,
       render: (_: unknown, record) => (
         <Space size={4}>
-          <Tooltip title="测试连接并刷新工具列表">
+          <Tooltip title={t('mcp.testConnection')}>
             <Button
               size="small"
               type="link"
@@ -235,7 +237,7 @@ export default function McpPage() {
               loading={testing === record.server_id}
               onClick={() => void testConnection(record.server_id)}
             >
-              测试
+              {t('mcp.test')}
             </Button>
           </Tooltip>
           <Switch
@@ -244,7 +246,7 @@ export default function McpPage() {
             onChange={() => void toggleServer(record.server_id)}
           />
           <Popconfirm
-            title={`删除 MCP 服务器 ${record.server_id}？`}
+            title={t('mcp.deleteConfirm', { id: record.server_id })}
             onConfirm={() => void deleteServer(record.server_id)}
           >
             <Button size="small" type="link" danger icon={<DeleteOutlined />} />
@@ -261,16 +263,16 @@ export default function McpPage() {
         title={
           <Space>
             <ApiOutlined style={{ color: ORANGE }} />
-            <span>MCP 服务器</span>
+            <span>{t('mcp.title')}</span>
             <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
-              {enabledCount}/{servers.length} 已启用 · 已启用服务器的工具在下次对话注入
+              {t('mcp.subtitle', { enabled: enabledCount, total: servers.length })}
             </Text>
           </Space>
         }
         extra={
           <Space>
             <Text type="secondary" style={{ fontSize: 12 }}>
-              当前 Agent：<Text code style={{ fontSize: 12 }}>{agentId}</Text>
+              {t('mcp.currentAgent')}：<Text code style={{ fontSize: 12 }}>{agentId}</Text>
             </Text>
             <Button
               size="small"
@@ -278,7 +280,7 @@ export default function McpPage() {
               icon={<PlusOutlined />}
               onClick={() => setAddOpen(true)}
             >
-              添加服务器
+              {t('mcp.addServer')}
             </Button>
           </Space>
         }
@@ -294,7 +296,7 @@ export default function McpPage() {
             emptyText: (
               <Space direction="vertical" size={4} style={{ padding: '16px 0' }}>
                 <ApiOutlined style={{ fontSize: 28, color: '#ddd' }} />
-                <Text type="secondary">尚未配置 MCP 服务器，点击右上角「添加服务器」开始</Text>
+                <Text type="secondary">{t('mcp.emptyHint')}</Text>
               </Space>
             ),
           }}
@@ -308,7 +310,7 @@ export default function McpPage() {
               if (!tools.length) {
                 return (
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    未获取到工具（服务器未连接或依赖未安装）
+                    {t('mcp.noToolsFound')}
                   </Text>
                 );
               }
@@ -339,59 +341,59 @@ export default function McpPage() {
       </Card>
 
       <Modal
-        title="添加 MCP 服务器"
+        title={t('mcp.addModalTitle')}
         open={addOpen}
         onCancel={() => setAddOpen(false)}
         onOk={() => void submitAdd()}
         confirmLoading={saving}
-        okText="添加"
-        cancelText="取消"
+        okText={t('common.add')}
+        cancelText={t('common.cancel')}
         destroyOnHidden
       >
         <Form form={form} layout="vertical" initialValues={{ transport: 'stdio', enabled: true }}>
           <Form.Item
-            label="服务器 ID"
+            label={t('mcp.serverId')}
             name="server_id"
             rules={[
-              { required: true, message: '请输入服务器 ID' },
+              { required: true, message: t('mcp.serverIdRequired') },
               {
                 pattern: /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/,
-                message: '仅支持字母、数字、下划线和连字符',
+                message: t('mcp.serverIdPattern'),
               },
             ]}
           >
-            <Input placeholder="例如 filesystem" />
+            <Input placeholder={t('mcp.serverIdExample')} />
           </Form.Item>
-          <Form.Item label="显示名称" name="name">
-            <Input placeholder="例如 文件系统服务" />
+          <Form.Item label={t('mcp.displayName')} name="name">
+            <Input placeholder={t('mcp.displayNameExample')} />
           </Form.Item>
-          <Form.Item label="传输方式" name="transport" rules={[{ required: true }]}>
+          <Form.Item label={t('mcp.transportType')} name="transport" rules={[{ required: true }]}>
             <Select
               options={[
-                { value: 'stdio', label: 'STDIO（本地进程）' },
-                { value: 'sse', label: 'SSE（HTTP 流）' },
+                { value: 'stdio', label: t('mcp.stdioLocal') },
+                { value: 'sse', label: t('mcp.sseHttp') },
                 { value: 'streamable_http', label: 'Streamable HTTP' },
               ]}
             />
           </Form.Item>
           {transport === 'stdio' ? (
             <Form.Item
-              label="启动命令"
+              label={t('mcp.startCommand')}
               name="command"
-              rules={[{ required: true, message: '请输入启动命令' }]}
+              rules={[{ required: true, message: t('mcp.startCommandRequired') }]}
             >
-              <Input placeholder="例如 npx -y @modelcontextprotocol/server-filesystem /path" />
+              <Input placeholder={t('mcp.startCommandExample')} />
             </Form.Item>
           ) : (
             <Form.Item
-              label="服务地址"
+              label={t('mcp.serviceUrl')}
               name="url"
-              rules={[{ required: true, message: '请输入服务地址' }]}
+              rules={[{ required: true, message: t('mcp.serviceUrlRequired') }]}
             >
-              <Input placeholder="例如 http://localhost:8000/mcp" />
+              <Input placeholder={t('mcp.serviceUrlExample')} />
             </Form.Item>
           )}
-          <Form.Item label="启用" name="enabled" valuePropName="checked">
+          <Form.Item label={t('mcp.enableLabel')} name="enabled" valuePropName="checked">
             <Switch />
           </Form.Item>
         </Form>

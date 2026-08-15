@@ -1,4 +1,4 @@
-import { Layout, Menu, theme } from 'antd';
+import { Layout, Menu, Select, theme } from 'antd';
 import {
   MessageOutlined,
   MailOutlined,
@@ -23,75 +23,79 @@ import {
   BugOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  GlobalOutlined,
 } from '@ant-design/icons';
 import { useEffect } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useAppStore } from '../stores/appStore';
 import { useAgentStore } from '../stores/agentStore';
+import { useI18n, LOCALE_LABELS, type Locale } from '../i18n';
 import AgentSelector from '../components/AgentSelector';
 
 const { Header, Sider, Content } = Layout;
-
-const menuItems = [
-  {
-    key: '/chat',
-    icon: <MessageOutlined />,
-    label: '聊天',
-  },
-  {
-    key: '/inbox',
-    icon: <MailOutlined />,
-    label: '收件箱',
-  },
-  {
-    key: 'control-group',
-    label: '控制',
-    type: 'group' as const,
-    children: [
-      { key: '/channels', icon: <WifiOutlined />, label: '频道' },
-      { key: '/sessions', icon: <MessageOutlined />, label: '会话' },
-      { key: '/cron-jobs', icon: <ClockCircleOutlined />, label: '定时任务' },
-      { key: '/heartbeat', icon: <HeartOutlined />, label: '心跳' },
-    ],
-  },
-  {
-    key: 'workspace-group',
-    label: '工作区',
-    type: 'group' as const,
-    children: [
-      { key: '/files', icon: <FileOutlined />, label: '文件' },
-      { key: '/skills', icon: <ThunderboltOutlined />, label: '技能' },
-      { key: '/tools', icon: <ToolOutlined />, label: '工具' },
-      { key: '/mcp', icon: <ApiOutlined />, label: 'MCP' },
-      { key: '/acp', icon: <CloudOutlined />, label: 'ACP' },
-      { key: '/agent-config', icon: <SettingOutlined />, label: '运行配置' },
-      { key: '/agent-stats', icon: <BarChartOutlined />, label: '智能体统计' },
-    ],
-  },
-  {
-    key: 'settings-group',
-    label: '设置',
-    type: 'group' as const,
-    children: [
-      { key: '/agents', icon: <RobotOutlined />, label: '智能体管理' },
-      { key: '/models', icon: <CodeOutlined />, label: '模型' },
-      { key: '/skill-pool', icon: <AppstoreOutlined />, label: '技能池' },
-      { key: '/environments', icon: <EnvironmentOutlined />, label: '环境变量' },
-      { key: '/security', icon: <SafetyOutlined />, label: '安全' },
-      { key: '/token-usage', icon: <DashboardOutlined />, label: 'Token 消耗' },
-      { key: '/backups', icon: <SaveOutlined />, label: '备份' },
-      { key: '/voice', icon: <AudioOutlined />, label: '语音转写' },
-      { key: '/debug', icon: <BugOutlined />, label: '调试' },
-    ],
-  },
-];
 
 export default function MainLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { sidebarCollapsed, toggleSidebar } = useAppStore();
   const refreshAgents = useAgentStore((s) => s.refreshAgents);
+  const selectedAgent = useAgentStore((s) => s.selectedAgent);
   const { token: { colorBgContainer, borderRadiusLG } } = theme.useToken();
+  const { t, locale, setLocale } = useI18n();
+
+  const menuItems = [
+    {
+      key: '/chat',
+      icon: <MessageOutlined />,
+      label: t('menu.chat'),
+    },
+    {
+      key: '/inbox',
+      icon: <MailOutlined />,
+      label: t('menu.inbox'),
+    },
+    {
+      key: 'control-group',
+      label: t('menu.control'),
+      type: 'group' as const,
+      children: [
+        { key: '/channels', icon: <WifiOutlined />, label: t('menu.channels') },
+        { key: '/sessions', icon: <MessageOutlined />, label: t('menu.sessions') },
+        { key: '/cron-jobs', icon: <ClockCircleOutlined />, label: t('menu.cronJobs') },
+        { key: '/heartbeat', icon: <HeartOutlined />, label: t('menu.heartbeat') },
+      ],
+    },
+    {
+      key: 'workspace-group',
+      label: t('menu.workspace'),
+      type: 'group' as const,
+      children: [
+        { key: '/files', icon: <FileOutlined />, label: t('menu.files') },
+        { key: '/skills', icon: <ThunderboltOutlined />, label: t('menu.skills') },
+        { key: '/tools', icon: <ToolOutlined />, label: t('menu.tools') },
+        { key: '/mcp', icon: <ApiOutlined />, label: 'MCP' },
+        { key: '/acp', icon: <CloudOutlined />, label: 'ACP' },
+        { key: '/agent-config', icon: <SettingOutlined />, label: t('menu.agentConfig') },
+        { key: '/agent-stats', icon: <BarChartOutlined />, label: t('menu.agentStats') },
+      ],
+    },
+    {
+      key: 'settings-group',
+      label: t('menu.settings'),
+      type: 'group' as const,
+      children: [
+        { key: '/agents', icon: <RobotOutlined />, label: t('menu.agents') },
+        { key: '/models', icon: <CodeOutlined />, label: t('menu.models') },
+        { key: '/skill-pool', icon: <AppstoreOutlined />, label: t('menu.skillPool') },
+        { key: '/environments', icon: <EnvironmentOutlined />, label: t('menu.environments') },
+        { key: '/security', icon: <SafetyOutlined />, label: t('menu.security') },
+        { key: '/token-usage', icon: <DashboardOutlined />, label: t('menu.tokenUsage') },
+        { key: '/backups', icon: <SaveOutlined />, label: t('menu.backups') },
+        { key: '/voice', icon: <AudioOutlined />, label: t('menu.voice') },
+        { key: '/debug', icon: <BugOutlined />, label: t('menu.debug') },
+      ],
+    },
+  ];
 
   useEffect(() => {
     void refreshAgents();
@@ -130,9 +134,17 @@ export default function MainLayout() {
         <Menu
           theme="dark"
           mode="inline"
-          selectedKeys={[location.pathname]}
+          selectedKeys={[`/${location.pathname.split('/').filter(Boolean)[0] ?? ''}`]}
           items={menuItems}
-          onClick={({ key }) => navigate(key)}
+          onClick={({ key }) => {
+            // For routes that support agentId, append the current agent.
+            const agentRoutes = ['/chat', '/files', '/agent-config', '/agent-stats', '/sessions'];
+            if (agentRoutes.includes(key)) {
+              navigate(`${key}/${selectedAgent}`);
+            } else {
+              navigate(key);
+            }
+          }}
           style={{ borderRight: 0 }}
         />
       </Sider>
@@ -150,6 +162,17 @@ export default function MainLayout() {
           >
             {sidebarCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
           </span>
+          <Select
+            value={locale}
+            onChange={(val) => setLocale(val as Locale)}
+            size="small"
+            style={{ width: 100, marginLeft: 16 }}
+            suffixIcon={<GlobalOutlined />}
+            options={Object.entries(LOCALE_LABELS).map(([value, label]) => ({
+              value,
+              label,
+            }))}
+          />
         </Header>
         <Content style={{
           margin: 24,

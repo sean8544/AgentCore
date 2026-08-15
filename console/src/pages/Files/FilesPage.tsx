@@ -28,17 +28,18 @@ import type { DataNode, EventDataNode } from 'antd/es/tree';
 import type { UploadProps } from 'antd';
 import { apiClient } from '../../api/client';
 import { useAgentId } from '../../stores/agentStore';
+import { useI18n } from '../../i18n';
 
 const { Text } = Typography;
 
 /* ───────── Constants ───────── */
 const ORANGE = '#FF7F16';
 const KERNEL_FILES = ['agent.md', 'profile.md', 'soul.md', 'bootstrap.md'] as const;
-const KERNEL_LABELS: Record<string, string> = {
-  'agent.md': 'Agent 身份',
-  'profile.md': 'Profile 配置',
-  'soul.md': '核心人设',
-  'bootstrap.md': '启动引导',
+const KERNEL_LABEL_KEYS: Record<string, string> = {
+  'agent.md': 'files.agentIdentity',
+  'profile.md': 'files.profileConfig',
+  'soul.md': 'files.corePersona',
+  'bootstrap.md': 'files.bootstrap',
 };
 
 /* ───────── Types ───────── */
@@ -82,6 +83,7 @@ function toTreeNodes(items: FileItem[]): DataNode[] {
 /* ───────── Main Page ───────── */
 export default function FilesPage() {
   const agentId = useAgentId();
+  const { t } = useI18n();
   const [treeData, setTreeData] = useState<DataNode[]>([]);
   const [treeLoading, setTreeLoading] = useState(false);
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([]);
@@ -139,7 +141,7 @@ export default function FilesPage() {
         const items = await loadDir(String(node.key));
         setTreeData((origin) => updateTreeChildren(origin, String(node.key), toTreeNodes(items)));
       } catch {
-        antdMessage.error('目录加载失败');
+        antdMessage.error(t('files.loadFailed'));
       }
     },
     [loadDir],
@@ -167,10 +169,10 @@ export default function FilesPage() {
         const resp = (err as { response?: { status?: number; data?: { detail?: string } } })?.response;
         const detail = resp?.data?.detail;
         if (resp?.status === 404) {
-          antdMessage.warning('文件不存在（可能已被 Agent 删除）');
+          antdMessage.warning(t('files.fileNotFound'));
           void reloadTree();
         } else {
-          antdMessage.error(detail === 'Binary file not supported' ? '二进制文件不支持编辑' : '文件读取失败');
+          antdMessage.error(detail === 'Binary file not supported' ? t('files.binaryNotSupported') : t('files.readFailed'));
         }
         setTabs((prev) => prev.filter((t) => t.path !== path));
         setActiveKey('');
@@ -201,7 +203,7 @@ export default function FilesPage() {
       const content = contentsRef.current[target];
       if (content === undefined) return;
       if (content === originals[target]) {
-        antdMessage.info('没有需要保存的更改');
+        antdMessage.info(t('files.noChanges'));
         return;
       }
       setSaving(true);
@@ -213,12 +215,12 @@ export default function FilesPage() {
         );
         setOriginals((prev) => ({ ...prev, [target]: content }));
         if (tab?.isKernel) {
-          antdMessage.success('已保存，系统提示词已更新');
+          antdMessage.success(t('files.savedSystemPrompt'));
         } else {
-          antdMessage.success('文件保存成功');
+          antdMessage.success(t('files.savedSuccess'));
         }
       } catch {
-        antdMessage.error('保存失败，请重试');
+        antdMessage.error(t('common.saveFailed'));
       } finally {
         setSaving(false);
       }
@@ -270,12 +272,12 @@ export default function FilesPage() {
           form,
           { params: { path: uploadDir } },
         );
-        antdMessage.success(`已上传 ${(file as File).name}`);
+        antdMessage.success(t('files.uploadSuccess', { name: (file as File).name }));
         onSuccess?.({}, new XMLHttpRequest());
         // Refresh root listing (subdir refresh happens on re-expand).
         void reloadTree();
       } catch (err) {
-        antdMessage.error('上传失败');
+        antdMessage.error(t('files.uploadFailed'));
         onError?.(err as Error);
       }
     },
@@ -304,7 +306,7 @@ export default function FilesPage() {
         <div style={{ padding: '14px 16px 10px', borderBottom: '1px solid #f0f0f0' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
             <RobotOutlined style={{ color: ORANGE }} />
-            <Text strong style={{ fontSize: 13 }}>文件管理</Text>
+            <Text strong style={{ fontSize: 13 }}>{t('files.title')}</Text>
             <Text code style={{ fontSize: 11, marginLeft: 'auto' }}>{agentId}</Text>
           </div>
         </div>
@@ -315,7 +317,7 @@ export default function FilesPage() {
             fontSize: 12, fontWeight: 600, color: '#8c8c8c', letterSpacing: 0.5,
             margin: '4px 4px 8px',
           }}>
-            内核文件
+            {t('files.kernelFiles')}
           </div>
           {visibleKernelFiles.map((name) => {
             const active = activeKey === name;
@@ -335,7 +337,7 @@ export default function FilesPage() {
                 <ControlOutlined style={{ color: active ? ORANGE : '#faad14' }} />
                 <span style={{ fontWeight: active ? 600 : 400 }}>{name}</span>
                 <Text type="secondary" style={{ fontSize: 11, marginLeft: 'auto' }}>
-                  {KERNEL_LABELS[name]}
+                  {t(KERNEL_LABEL_KEYS[name] ?? '')}
                 </Text>
               </div>
             );
@@ -347,16 +349,16 @@ export default function FilesPage() {
             margin: '18px 4px 8px',
           }}>
             <span style={{ fontSize: 12, fontWeight: 600, color: '#8c8c8c', letterSpacing: 0.5 }}>
-              工作区文件
+              {t('files.workspaceFiles')}
             </span>
             <span style={{ display: 'flex', gap: 2 }}>
               <Upload {...uploadProps}>
-                <Tooltip title={`上传到 ${uploadDir || '根目录'}`}>
+                <Tooltip title={t('files.uploadTo', { dir: uploadDir || t('files.rootDir') })}>
                   <Button type="text" size="small" icon={<UploadOutlined style={{ fontSize: 13 }} />}
                     style={{ color: '#8c8c8c' }} />
                 </Tooltip>
               </Upload>
-              <Tooltip title="刷新">
+              <Tooltip title={t('common.refresh')}>
                 <Button type="text" size="small" icon={<ReloadOutlined style={{ fontSize: 13 }} />}
                   onClick={() => void reloadTree()} style={{ color: '#8c8c8c' }} />
               </Tooltip>
@@ -366,7 +368,7 @@ export default function FilesPage() {
             <div style={{ textAlign: 'center', padding: 24 }}><Spin size="small" /></div>
           ) : treeData.length === 0 ? (
             <Text type="secondary" style={{ fontSize: 12, padding: '0 4px' }}>
-              工作区为空
+              {t('files.workspaceEmpty')}
             </Text>
           ) : (
             <Tree
@@ -397,7 +399,7 @@ export default function FilesPage() {
               image={Empty.PRESENTED_IMAGE_SIMPLE}
               description={
                 <span style={{ color: '#999', fontSize: 13 }}>
-                  选择左侧的内核文件或工作区文件进行编辑
+                  {t('files.selectFileToEdit')}
                 </span>
               }
             />
@@ -428,7 +430,7 @@ export default function FilesPage() {
                 </span>
               ),
               children: (
-                <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
                   {/* Editor toolbar */}
                   <div style={{
                     display: 'flex', alignItems: 'center', gap: 10,
@@ -439,11 +441,11 @@ export default function FilesPage() {
                     <Text code style={{ fontSize: 12 }}>{tab.path}</Text>
                     {tab.isKernel && (
                       <Tag color="orange" style={{ marginInlineEnd: 0, fontSize: 11 }}>
-                        内核文件 · 保存后生效
+                        {t('files.kernelLabel')}
                       </Tag>
                     )}
                     <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <Tooltip title="下载">
+                      <Tooltip title={t('files.download')}>
                         <Button
                           size="small" type="text"
                           icon={<DownloadOutlined />}
@@ -465,7 +467,7 @@ export default function FilesPage() {
                           borderColor: contents[tab.path] !== originals[tab.path] ? ORANGE : undefined,
                         }}
                       >
-                        保存
+                        {t('common.save')}
                       </Button>
                     </div>
                   </div>
@@ -481,10 +483,10 @@ export default function FilesPage() {
                       onChange={(e) =>
                         setContents((prev) => ({ ...prev, [tab.path]: e.target.value }))}
                       onKeyDown={handleEditorKeyDown}
-                      placeholder="（空文件）"
+                      placeholder={t('files.emptyFile')}
                       spellCheck={false}
                       style={{
-                        flex: 1, resize: 'none', border: 'none', borderRadius: 0,
+                        flex: 1, minHeight: 0, resize: 'none', border: 'none', borderRadius: 0,
                         padding: 16, fontSize: 13, lineHeight: 1.7,
                         fontFamily: "'JetBrains Mono', Menlo, Consolas, monospace",
                         boxShadow: 'none',
@@ -497,13 +499,13 @@ export default function FilesPage() {
                     padding: '4px 16px', borderTop: '1px solid #f0f0f0',
                     display: 'flex', gap: 16, fontSize: 11, color: '#999', background: '#fafafa',
                   }}>
-                    <span>{(contents[tab.path] ?? '').length} 字符</span>
-                    <span>{(contents[tab.path] ?? '').split('\n').length} 行</span>
+                    <span>{t('files.chars', { count: (contents[tab.path] ?? '').length })}</span>
+                    <span>{t('files.lines', { count: (contents[tab.path] ?? '').split('\n').length })}</span>
                     {contents[tab.path] !== originals[tab.path] && (
-                      <span style={{ color: ORANGE }}>● 未保存（Ctrl+S 保存）</span>
+                      <span style={{ color: ORANGE }}>{t('files.unsaved')}</span>
                     )}
                     {activeIsKernel && tab.path === activeKey && dirty && (
-                      <span>保存后系统将重建 Agent 提示词</span>
+                      <span>{t('files.rebuildHint')}</span>
                     )}
                   </div>
                 </div>
@@ -514,10 +516,14 @@ export default function FilesPage() {
       </div>
       <style>{`
         .files-tabs { display: flex; flex-direction: column; height: 100%; }
-        .files-tabs .ant-tabs-content-holder { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-        .files-tabs .ant-tabs-content { height: 100%; }
-        .files-tabs .ant-tabs-tabpane { height: 100%; }
-        .files-tabs .ant-tabs-tabpane > div { height: 100%; }
+        /* antd v6 Tabs DOM: .ant-tabs-body-holder > .ant-tabs-body > .ant-tabs-content(pane) */
+        /* Only the visible pane gets the flex chain — inactive panes keep the
+           library's .ant-tabs-content-hidden { display: none } rule, otherwise
+           every open tab's content would stack vertically. */
+        .files-tabs .ant-tabs-body-holder { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+        .files-tabs .ant-tabs-body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+        .files-tabs .ant-tabs-content:not(.ant-tabs-content-hidden) { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+        .files-tabs .ant-tabs-content > div { flex: 1; min-height: 0; }
       `}</style>
     </div>
   );

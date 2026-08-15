@@ -14,9 +14,16 @@ import {
   Typography,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { DeleteOutlined, MessageOutlined, ReloadOutlined } from '@ant-design/icons';
+import {
+  DeleteOutlined,
+  DownOutlined,
+  MessageOutlined,
+  ReloadOutlined,
+  UpOutlined,
+} from '@ant-design/icons';
 import { apiClient } from '../../api/client';
 import { useAgentStore } from '../../stores/agentStore';
+import { useI18n } from '../../i18n';
 
 const { Title, Text } = Typography;
 
@@ -43,6 +50,21 @@ function formatTime(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+/**
+ * Clean token-boundary newlines left in legacy streamed replies (each
+ * token chunk ended with ``\n``, so words ended up on separate lines).
+ * Collapse a single newline between two non-newline characters into a
+ * space; real paragraphs (blank-line separated) are preserved.
+ */
+function normalizeText(text: string): string {
+  // \u000a is a newline — written this way to survive JSON escaping.
+  // Lookahead keeps the next character unconsumed so adjacent token
+  // boundaries ("a\nb\nc") are all collapsed in one pass.
+  const reSingle = /([^\u000a])\u000a(?=[^\u000a])/g;
+  const reMany = /\u000a{3,}/g;
+  return text.replace(reSingle, '$1 ').replace(reMany, '\u000a\u000a');
+}
+
 const roleStyle: Record<string, { color: string; label: string }> = {
   user: { color: 'blue', label: 'User' },
   assistant: { color: 'green', label: 'Assistant' },
@@ -50,7 +72,59 @@ const roleStyle: Record<string, { color: string; label: string }> = {
   tool: { color: 'purple', label: 'Tool' },
 };
 
+/** Message bubble with collapsible body for very long replies. */
+function MessageBlock({ msg }: { msg: ChatMessage }) {
+  const { t } = useI18n();
+  const [expanded, setExpanded] = useState(false);
+  const style = roleStyle[msg.role] ?? { color: 'default', label: msg.role };
+  const isUser = msg.role === 'user';
+  const content = normalizeText(msg.content || '');
+  const long = content.length > 600;
+  const collapsible = long && !expanded;
+
+  return (
+    <div
+      style={{
+        padding: '12px 14px',
+        borderRadius: 10,
+        border: '1px solid rgba(5, 5, 5, 0.06)',
+        background: isUser ? 'rgba(22, 119, 255, 0.05)' : 'rgba(82, 196, 26, 0.05)',
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 8 }}>
+        <Tag color={style.color} style={{ marginInlineEnd: 0 }}>{style.label}</Tag>
+        <Text type="secondary" style={{ fontSize: 12, flexShrink: 0 }}>
+          {formatTime(msg.timestamp)}
+        </Text>
+      </div>
+      <Text style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 13, lineHeight: 1.75 }}>
+        {collapsible ? `${content.slice(0, 600)}…` : content}
+      </Text>
+      {collapsible && (
+        <Button type="link" size="small" style={{ padding: 0, marginTop: 4 }} onClick={() => setExpanded(true)}>
+          <DownOutlined /> {t('sessions.expand')}
+        </Button>
+      )}
+      {expanded && long && (
+        <Button type="link" size="small" style={{ padding: 0, marginTop: 4 }} onClick={() => setExpanded(false)}>
+          <UpOutlined /> {t('sessions.collapse')}
+        </Button>
+      )}
+      {msg.tool_calls && msg.tool_calls.length > 0 && (
+        <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {msg.tool_calls.map((tc, i) => (
+            <Tag key={tc.id || i} color="purple" style={{ marginInlineEnd: 0, marginBottom: 0 }}>
+              {t('sessions.toolCall', { name: tc.name })}
+            </Tag>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function SessionsPage() {
+  const { t } = useI18n();
   const selectedAgent = useAgentStore((s) => s.selectedAgent);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [loading, setLoading] = useState(false);
@@ -69,7 +143,7 @@ export default function SessionsPage() {
       setSessions(data ?? []);
     } catch (err) {
       console.error('Failed to load sessions', err);
-      message.error('加载会话列表失败');
+      message.error(t('sessions.loadFailed'));
     } finally {
       setLoading(false);
     }
@@ -102,7 +176,7 @@ export default function SessionsPage() {
       setHistory(data ?? []);
     } catch (err) {
       console.error('Failed to load history', err);
-      message.error('加载消息历史失败');
+      message.error(t('sessions.historyLoadFailed'));
     } finally {
       setHistoryLoading(false);
     }
@@ -112,7 +186,7 @@ export default function SessionsPage() {
     setDeletingId(sessionId);
     try {
       await apiClient.delete(`/chat/sessions/${sessionId}`);
-      message.success('会话已删除');
+      message.success(t('sessions.deletedSuccess'));
       if (activeSession?.session_id === sessionId) {
         setDrawerOpen(false);
         setActiveSession(null);
@@ -120,7 +194,7 @@ export default function SessionsPage() {
       await fetchSessions();
     } catch (err) {
       console.error('Failed to delete session', err);
-      message.error('删除会话失败');
+      message.error(t('sessions.deleteFailed'));
     } finally {
       setDeletingId(null);
     }
@@ -128,7 +202,7 @@ export default function SessionsPage() {
 
   const columns: ColumnsType<SessionInfo> = [
     {
-      title: '会话 ID',
+      title: t('sessions.sessionId'),
       dataIndex: 'session_id',
       key: 'session_id',
       ellipsis: true,
@@ -146,7 +220,7 @@ export default function SessionsPage() {
       render: (id: string) => <Tag color="geekblue">{id || '-'}</Tag>,
     },
     {
-      title: '消息数',
+      title: t('sessions.messageCount'),
       dataIndex: 'message_count',
       key: 'message_count',
       width: 110,
@@ -160,7 +234,7 @@ export default function SessionsPage() {
       ),
     },
     {
-      title: '创建时间',
+      title: t('sessions.createdAt'),
       dataIndex: 'created_at',
       key: 'created_at',
       width: 190,
@@ -168,7 +242,7 @@ export default function SessionsPage() {
       render: formatTime,
     },
     {
-      title: '最近更新',
+      title: t('sessions.updatedAt'),
       dataIndex: 'updated_at',
       key: 'updated_at',
       width: 190,
@@ -176,23 +250,23 @@ export default function SessionsPage() {
       render: formatTime,
     },
     {
-      title: '操作',
+      title: t('common.actions'),
       key: 'actions',
       width: 160,
       render: (_, record) => (
         <Space>
           <Button size="small" onClick={() => openDetail(record)}>
-            查看详情
+            {t('sessions.viewDetail')}
           </Button>
           <Popconfirm
-            title="删除会话"
-            description="将同时删除该会话的全部消息记录，确定删除？"
-            okText="删除"
+            title={t('sessions.deleteSession')}
+            description={t('sessions.deleteConfirm')}
+            okText={t('common.delete')}
             okButtonProps={{ danger: true }}
-            cancelText="取消"
+            cancelText={t('common.cancel')}
             onConfirm={() => handleDelete(record.session_id)}
           >
-            <Tooltip title="删除会话">
+            <Tooltip title={t('sessions.deleteSession')}>
               <Button
                 size="small"
                 danger
@@ -210,11 +284,11 @@ export default function SessionsPage() {
     <div style={{ padding: 24 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <Title level={3} style={{ margin: 0 }}>
-          会话管理
+          {t('sessions.title')}
         </Title>
         <Space>
           <Select
-            placeholder="按 Agent 筛选"
+            placeholder={t('sessions.filterByAgent')}
             allowClear
             style={{ width: 220 }}
             options={agentOptions}
@@ -223,7 +297,7 @@ export default function SessionsPage() {
             showSearch
           />
           <Button icon={<ReloadOutlined />} onClick={fetchSessions} loading={loading}>
-            刷新
+            {t('common.refresh')}
           </Button>
         </Space>
       </div>
@@ -233,15 +307,15 @@ export default function SessionsPage() {
         dataSource={filteredSessions}
         rowKey="session_id"
         loading={loading}
-        pagination={{ pageSize: 10, showSizeChanger: false, showTotal: (t) => `共 ${t} 个会话` }}
-        locale={{ emptyText: <Empty description="暂无会话" /> }}
+        pagination={{ pageSize: 10, showSizeChanger: false, showTotal: (total) => t('sessions.pagination', { count: total }) }}
+        locale={{ emptyText: <Empty description={t('sessions.noSessions')} /> }}
       />
 
       <Drawer
-        title="会话详情"
+        title={t('sessions.sessionDetail')}
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
-        width={640}
+        width={720}
         destroyOnHidden
         extra={
           activeSession ? (
@@ -255,7 +329,7 @@ export default function SessionsPage() {
               <Text code>{activeSession.session_id}</Text>
             </div>
             <Text type="secondary" style={{ fontSize: 12 }}>
-              创建于 {formatTime(activeSession.created_at)} · 共 {activeSession.message_count} 条消息
+              {t('sessions.createdInfo', { time: formatTime(activeSession.created_at), count: activeSession.message_count })}
             </Text>
           </div>
         )}
@@ -265,43 +339,12 @@ export default function SessionsPage() {
             <Spin />
           </div>
         ) : history.length === 0 ? (
-          <Empty description="暂无消息" />
+          <Empty description={t('sessions.noMessages')} />
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {history.map((msg, idx) => {
-              const style = roleStyle[msg.role] ?? { color: 'default', label: msg.role };
-              const isUser = msg.role === 'user';
-              return (
-                <div
-                  key={idx}
-                  style={{
-                    padding: 12,
-                    borderRadius: 8,
-                    border: '1px solid rgba(5, 5, 5, 0.06)',
-                    background: isUser ? 'rgba(22, 119, 255, 0.04)' : 'rgba(82, 196, 26, 0.04)',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                    <Tag color={style.color}>{style.label}</Tag>
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      {formatTime(msg.timestamp)}
-                    </Text>
-                  </div>
-                  <Text style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                    {msg.content || '(空消息)'}
-                  </Text>
-                  {msg.tool_calls && msg.tool_calls.length > 0 && (
-                    <div style={{ marginTop: 8 }}>
-                      {msg.tool_calls.map((tc, i) => (
-                        <Tag key={tc.id || i} color="purple" style={{ marginBottom: 4 }}>
-                          工具调用: {tc.name}
-                        </Tag>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {history.map((msg, idx) => (
+              <MessageBlock key={idx} msg={msg} />
+            ))}
           </div>
         )}
       </Drawer>

@@ -68,9 +68,8 @@ def _clear_graph_cache():
 
 
 def _exclusion_middleware(middleware):
-    sdk_cls = agent_factory_mod._SdkToolExclusionMiddleware
-    assert sdk_cls is not None, "SDK _ToolExclusionMiddleware must be importable"
-    return [m for m in middleware if isinstance(m, sdk_cls)]
+    local_cls = agent_factory_mod._ToolExclusionMiddleware
+    return [m for m in middleware if isinstance(m, local_cls)]
 
 
 # ---------------------------------------------------------------------------
@@ -78,15 +77,15 @@ def _exclusion_middleware(middleware):
 # ---------------------------------------------------------------------------
 
 
-def test_tool_exclusion_uses_sdk_middleware(captured_create):
+def test_tool_exclusion_uses_public_middleware(captured_create):
     config = _config(tools={"enabled": [], "disabled": ["write_file"]})
     AgentFactory().create_agent(config)
 
     exclusion = _exclusion_middleware(captured_create.get("middleware", []))
     assert len(exclusion) == 1
     assert "write_file" in exclusion[0]._excluded
-    # The homegrown middleware class must be gone.
-    assert not hasattr(agent_factory_mod, "_ToolExclusionMiddleware")
+    # The middleware is now a public class in agent_factory (Task 1.7).
+    assert hasattr(agent_factory_mod, "_ToolExclusionMiddleware")
 
 
 def test_local_backend_always_excludes_execute(captured_create):
@@ -99,9 +98,11 @@ def test_local_backend_always_excludes_execute(captured_create):
 
 
 def test_no_extra_exclusion_on_sandbox_backend(captured_create):
+    # Sandbox backend now raises SandboxUnavailableError when not configured.
+    from agentcore.runtime.sandbox import SandboxUnavailableError
     config = _config(settings={"backend": {"type": "sandbox"}})
-    AgentFactory().create_agent(config)
-    assert _exclusion_middleware(captured_create.get("middleware", [])) == []
+    with pytest.raises(SandboxUnavailableError):
+        AgentFactory().create_agent(config)
 
 
 def test_execute_excluded_even_when_explicitly_enabled(captured_create):
@@ -131,6 +132,9 @@ def test_workspace_backend_forced_virtual_mode(captured_create, tmp_path):
     from deepagents.backends import FilesystemBackend
 
     backend = captured_create.get("backend")
+    # Workspace backend is a plain FilesystemBackend (no CompositeBackend
+    # wrapper).  The SDK's MemoryMiddleware loads memory files via the
+    # backend's download_files method.
     assert isinstance(backend, FilesystemBackend)
     assert backend.virtual_mode is True
     assert Path(backend.cwd).resolve() == workspace_dir.resolve()

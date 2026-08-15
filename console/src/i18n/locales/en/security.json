@@ -1,0 +1,17 @@
+{
+  "title": "Security Settings",
+  "subtitle": "Global security policies applied to every agent",
+  "approvalCard": "Dangerous Operation Approval",
+  "approvalDesc": "When enabled, the selected tools require human approval before any agent may run them.",
+  "enableApproval": "Enable dangerous operation approval",
+  "enableApprovalHelp": "When disabled, all agents run tools directly without asking for approval",
+  "approvalTools": "Tools requiring approval",
+  "approvalToolsPlaceholder": "Select dangerous tools that need human approval",
+  "globalNote": "Global configuration: all agents obey it, no per-agent setup needed",
+  "save": "Save Settings",
+  "saveSuccess": "Security settings saved",
+  "toolDelete": "Delete file (delete)",
+  "toolWriteFile": "Write file (write_file)",
+  "toolEditFile": "Edit file (edit_file)",
+  "toolExecute": "Execute command (execute)"
+}

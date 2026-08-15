@@ -494,6 +494,14 @@ class MultiAgentManager:
         """Return all currently loaded workspace IDs."""
         return list(self._workspaces.keys())
 
+    def get_loaded_workspaces(self) -> dict[str, Workspace]:
+        """Return a snapshot of all loaded workspaces (agent_id → Workspace).
+
+        The returned dict is a shallow copy — safe to iterate while
+        other workspaces are being created/removed concurrently.
+        """
+        return dict(self._workspaces)
+
     def is_workspace_loaded(self, agent_id: str) -> bool:
         """Check whether a workspace is currently loaded for *agent_id*."""
         return agent_id in self._workspaces

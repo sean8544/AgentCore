@@ -1,0 +1,8 @@
+{
+  "title": "工具管理",
+  "subtitle": "{{enabled}}/{{total}} 已启用 · 变更在下次对话生效",
+  "currentAgent": "当前 Agent",
+  "tool": "工具",
+  "builtin": "内置",
+  "loadFailed": "工具列表加载失败"
+}

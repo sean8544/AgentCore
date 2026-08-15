@@ -90,7 +90,7 @@ def test_registry_aggregates_workspaces_and_excludes_self():
     subagents = registry.get_subagents(exclude_agent_id="alice")
     assert [s["name"] for s in subagents] == ["bob"]
     spec = subagents[0]
-    assert spec["description"] == "Agent: bob"
+    assert spec["description"] == "Agent 'bob'"
     assert spec["system_prompt"] == "Bob prompt"
 
 

@@ -7,32 +7,50 @@ export interface AgentInfo {
   agent_id: string;
   state?: string;
   session_count?: number;
+  description?: string;
+  enable_subagents?: boolean;
 }
+
+/** Agent-aware routes: /chat/:agentId, /files/:agentId, etc. */
+const AGENT_ROUTES = ['chat', 'files', 'agent-config', 'agent-stats', 'sessions'];
+
+/**
+ * Resolve the agent id from the URL only (path param or ?agent= query).
+ * Returns null when the URL carries no agent id.
+ */
+export const getAgentIdFromUrl = (): string | null => {
+  const pathParts = window.location.pathname.split('/').filter(Boolean);
+  if (pathParts.length >= 2 && AGENT_ROUTES.includes(pathParts[0]) && pathParts[1]) {
+    return pathParts[1];
+  }
+  return new URLSearchParams(window.location.search).get('agent');
+};
 
 /**
  * Resolve the current agent id (project-wide single entry point).
- * Priority: URL `?agent=` param > agentStore.selectedAgent.
+ * Priority: URL path segment (/chat/:agentId) > URL `?agent=` param > agentStore.selectedAgent.
  */
-export const getAgentId = (): string =>
-  new URLSearchParams(window.location.search).get('agent') ??
-  useAgentStore.getState().selectedAgent;
+export const getAgentId = (): string => {
+  return getAgentIdFromUrl() ?? useAgentStore.getState().selectedAgent;
+};
 
 /**
- * Reactive hook version of {@link getAgentId}. If the URL carries an
- * `?agent=` param it is written back to the store once on mount, so the
- * global selector stays in sync.
+ * Reactive hook version of {@link getAgentId}. Whenever the URL carries
+ * an agent id (path param or query param) it is written back to the
+ * store, so the global selector stays in sync — including navigations
+ * that happen without a remount (e.g. delegation-bubble clicks).
  */
 export const useAgentId = (): string => {
   const selectedAgent = useAgentStore((s) => s.selectedAgent);
   const setSelectedAgent = useAgentStore((s) => s.setSelectedAgent);
-  const urlAgent = new URLSearchParams(window.location.search).get('agent');
+
+  const urlAgent = getAgentIdFromUrl();
 
   useEffect(() => {
     if (urlAgent && urlAgent !== useAgentStore.getState().selectedAgent) {
       setSelectedAgent(urlAgent);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [urlAgent, setSelectedAgent]);
 
   return urlAgent ?? selectedAgent;
 };
@@ -61,10 +79,18 @@ export const useAgentStore = create<AgentState>()(
           const agents = Array.isArray(res.data) ? res.data : [];
           set({ agents, loading: false });
 
-          // 如果当前选中的 agent 不存在，回落到第一个或 'default'
+          // 同步选择：URL 中的 agent 优先（刷新后下拉列表与 URL 保持一致）；
+          // 否则若当前选中的 agent 已不存在，回落到第一个。
           const { selectedAgent } = get();
-          if (agents.length > 0 && !agents.find((a) => a.agent_id === selectedAgent)) {
-            set({ selectedAgent: agents[0].agent_id });
+          if (agents.length > 0) {
+            const urlAgent = getAgentIdFromUrl();
+            if (urlAgent && agents.some((a) => a.agent_id === urlAgent)) {
+              if (selectedAgent !== urlAgent) {
+                set({ selectedAgent: urlAgent });
+              }
+            } else if (!agents.some((a) => a.agent_id === selectedAgent)) {
+              set({ selectedAgent: agents[0].agent_id });
+            }
           }
         } catch (error) {
           set({ loading: false });

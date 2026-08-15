@@ -55,7 +55,9 @@ def test_create_agent_with_default_config(client) -> None:
     assert config["tools"] == {"enabled": [], "disabled": []}
 
     # Kernel files are still seeded (memory=[] injection sources).
-    for name in ("agent.md", "profile.md", "soul.md"):
+    # Only bootstrap.md and agent.md — legacy profile.md / soul.md are
+    # no longer created for new workspaces.
+    for name in ("bootstrap.md", "agent.md"):
         assert (Path(".agentcore/workspace/agent/demo") / name).exists()
 
     # Sessions persist outside the agent-visible workspace.
@@ -104,6 +106,8 @@ def test_kernel_file_round_trip(client) -> None:
     )
     assert write_resp.status_code == 200
 
+    # Legacy kernel files (profile.md / soul.md) remain writable and
+    # readable even though new workspaces no longer seed them.
     reread = client.get("/api/agents/kernel-demo/kernel/soul.md")
     assert "小明" in reread.json()["content"]
 
@@ -121,7 +125,7 @@ def test_default_agent_bootstrapped_on_fresh_install(client) -> None:
     assert any(item["agent_id"] == "default" for item in listed)
 
     ws = Path(".agentcore/workspace/agent/default")
-    for name in ("agent.md", "profile.md", "soul.md", "bootstrap.md", "agent.json"):
+    for name in ("bootstrap.md", "agent.md", "agent.json"):
         assert (ws / name).exists()
     assert (ws / "skills").is_dir()
     assert (ws / ".bootstrap_seeded").exists()

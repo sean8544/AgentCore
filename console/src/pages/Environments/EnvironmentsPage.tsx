@@ -14,6 +14,7 @@ import {
 import { DeleteOutlined, EditOutlined, KeyOutlined, PlusOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { apiClient } from '../../api/client';
+import { useI18n } from '../../i18n';
 
 const { Text } = Typography;
 
@@ -32,6 +33,7 @@ interface EnvFormValues {
 }
 
 export default function EnvironmentsPage() {
+  const { t } = useI18n();
   const [envs, setEnvs] = useState<EnvItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
@@ -47,7 +49,7 @@ export default function EnvironmentsPage() {
       setEnvs(res.data.envs ?? []);
     } catch {
       setEnvs([]);
-      antdMessage.error('环境变量加载失败');
+      antdMessage.error(t('envs.loadFailed'));
     } finally {
       setLoading(false);
     }
@@ -81,7 +83,7 @@ export default function EnvironmentsPage() {
     const value = values.value;
 
     if (!editingKey && value === '') {
-      antdMessage.warning('新增变量必须填写值');
+      antdMessage.warning(t('envs.valueRequired'));
       return;
     }
 
@@ -92,12 +94,12 @@ export default function EnvironmentsPage() {
         [key]: editingKey && value === '' ? '***' : value,
       };
       await apiClient.put('/envs', payload);
-      antdMessage.success(editingKey ? '已更新' : '已添加');
+      antdMessage.success(editingKey ? t('envs.updated') : t('envs.addedSuccess'));
       setModalOpen(false);
       void loadEnvs();
     } catch (err) {
       const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      antdMessage.error(detail ?? '保存失败');
+      antdMessage.error(detail ?? t('envs.saveFailed'));
     } finally {
       setSaving(false);
     }
@@ -107,16 +109,16 @@ export default function EnvironmentsPage() {
   const handleDelete = async (key: string) => {
     try {
       await apiClient.delete(`/envs/${encodeURIComponent(key)}`);
-      antdMessage.success(`已删除 ${key}`);
+      antdMessage.success(t('envs.deletedSuccess', { key }));
       void loadEnvs();
     } catch {
-      antdMessage.error('删除失败');
+      antdMessage.error(t('envs.deleteFailed'));
     }
   };
 
   const columns: ColumnsType<EnvItem> = [
     {
-      title: '变量名',
+      title: t('envs.variableName'),
       dataIndex: 'key',
       width: 320,
       render: (key: string) => (
@@ -124,14 +126,14 @@ export default function EnvironmentsPage() {
       ),
     },
     {
-      title: '值',
+      title: t('envs.value'),
       dataIndex: 'value',
       render: () => (
         <Text type="secondary" style={{ letterSpacing: 2 }}>••••••••</Text>
       ),
     },
     {
-      title: '操作',
+      title: t('common.actions'),
       width: 140,
       align: 'center',
       render: (_, record) => (
@@ -143,10 +145,10 @@ export default function EnvironmentsPage() {
             onClick={() => openEdit(record.key)}
           />
           <Popconfirm
-            title={`删除 ${record.key}？`}
+            title={t('envs.deleteConfirm', { key: record.key })}
             onConfirm={() => void handleDelete(record.key)}
-            okText="删除"
-            cancelText="取消"
+            okText={t('common.delete')}
+            cancelText={t('common.cancel')}
             okButtonProps={{ danger: true }}
           >
             <Button type="text" size="small" danger icon={<DeleteOutlined />} />
@@ -163,9 +165,9 @@ export default function EnvironmentsPage() {
         title={
           <Space>
             <KeyOutlined style={{ color: ORANGE }} />
-            <span>环境变量</span>
+            <span>{t('envs.title')}</span>
             <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
-              值始终脱敏显示 · 保存后立即生效
+              {t('envs.subtitle')}
             </Text>
           </Space>
         }
@@ -177,7 +179,7 @@ export default function EnvironmentsPage() {
             onClick={openAdd}
             style={{ background: ORANGE, borderColor: ORANGE }}
           >
-            添加变量
+            {t('envs.addVariable')}
           </Button>
         }
       >
@@ -188,38 +190,38 @@ export default function EnvironmentsPage() {
           columns={columns}
           dataSource={envs}
           pagination={false}
-          locale={{ emptyText: '暂无环境变量，点击右上角添加（如 AGENTCORE_LLM_API_KEY）' }}
+          locale={{ emptyText: t('envs.emptyHint') }}
         />
       </Card>
 
       <Modal
-        title={editingKey ? `编辑 ${editingKey}` : '添加环境变量'}
+        title={editingKey ? t('envs.editTitle', { key: editingKey }) : t('envs.addTitle')}
         open={modalOpen}
         onOk={() => void handleSave()}
         onCancel={() => setModalOpen(false)}
         confirmLoading={saving}
-        okText="保存"
-        cancelText="取消"
+        okText={t('common.save')}
+        cancelText={t('common.cancel')}
         okButtonProps={{ style: { background: ORANGE, borderColor: ORANGE } }}
         destroyOnHidden
       >
         <Form form={form} layout="vertical" style={{ marginTop: 12 }}>
           <Form.Item
             name="key"
-            label="变量名"
+            label={t('envs.variableName')}
             rules={[
-              { required: true, message: '请输入变量名' },
-              { pattern: /^[A-Za-z_][A-Za-z0-9_]*$/, message: '仅支持字母、数字和下划线，且不能以数字开头' },
+              { required: true, message: t('envs.nameRequired') },
+              { pattern: /^[A-Za-z_][A-Za-z0-9_]*$/, message: t('envs.namePattern') },
             ]}
           >
-            <Input placeholder="例如 AGENTCORE_LLM_API_KEY" disabled={!!editingKey} />
+            <Input placeholder={t('envs.nameExample')} disabled={!!editingKey} />
           </Form.Item>
           <Form.Item
             name="value"
-            label="值"
-            extra={editingKey ? '留空表示保持原值不变' : undefined}
+            label={t('envs.value')}
+            extra={editingKey ? t('envs.keepOriginal') : undefined}
           >
-            <Input.Password placeholder={editingKey ? '输入新值以覆盖' : '请输入变量值'} autoComplete="new-password" />
+            <Input.Password placeholder={editingKey ? t('envs.enterNewValue') : t('envs.enterValue')} autoComplete="new-password" />
           </Form.Item>
         </Form>
       </Modal>

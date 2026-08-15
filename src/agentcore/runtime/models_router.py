@@ -2,12 +2,20 @@
 
 Aggregates the model configurations used across all agents (each agent's
 workspace ``agent.json`` carries a ``model`` section) and provides a
-connectivity test endpoint.
+connectivity test endpoint, plus a user-managed *model registry* (see
+:mod:`agentcore.runtime.model_store`) that the console Models page edits:
+OpenAI-compatible endpoints, custom headers, extra generation parameters
+and a single configurable default model.
 
 Endpoints
 ---------
-* ``GET  /api/models``      — all distinct model configurations in use
-* ``POST /api/models/test`` — test connectivity to a model endpoint
+* ``GET  /api/models``                       — all distinct model configs in use
+* ``GET  /api/models/library``               — the model registry (keys masked)
+* ``POST /api/models``                       — add a registry model
+* ``PUT  /api/models/{model_id}``            — update a registry model
+* ``DELETE /api/models/{model_id}``          — remove a registry model
+* ``PUT  /api/models/{model_id}/default``    — set/clear the default model
+* ``POST /api/models/test``                  — test connectivity (with headers/extra_body)
 """
 
 from __future__ import annotations
@@ -22,6 +30,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from agentcore.runtime import paths
+from agentcore.runtime import model_store
 from agentcore.runtime.agent_ids import known_agent_ids
 
 logger = logging.getLogger(__name__)
@@ -114,27 +123,136 @@ async def list_models(request: Request) -> dict[str, Any]:
     return {"models": list(grouped.values()), "count": len(grouped)}
 
 
+# ---------------------------------------------------------------------------
+# Model registry (user-managed library)
+# ---------------------------------------------------------------------------
+
+
+def _mask_model(entry: dict[str, Any]) -> dict[str, Any]:
+    """Expose a registry entry without the plaintext API key.
+
+    ``api_key_set`` reflects either a stored plaintext key or a resolvable
+    env-var reference (``api_key_env``).
+    """
+    masked = {k: entry.get(k) for k in model_store.PUBLIC_FIELDS}
+    masked["api_key_set"] = bool(entry.get("api_key")) or bool(
+        _resolve_api_key(entry.get("api_key_env"))
+    )
+    masked["agents"] = []
+    return masked
+
+
+@router.get("/library")
+async def list_model_library() -> dict[str, Any]:
+    """List the user-managed model registry (API keys masked)."""
+    models = [_mask_model(m) for m in model_store.load_model_registry()]
+    return {"models": models, "count": len(models)}
+
+
+class ModelRegistryPayload(BaseModel):
+    """Payload for creating / updating a registry model."""
+
+    name: str
+    provider: str | None = None
+    base_url: str
+    api_key: str | None = None
+    api_key_env: str | None = None
+    headers: list[dict[str, str]] | None = None
+    extra_body: dict[str, Any] | None = None
+    is_default: bool | None = None
+
+
+@router.post("")
+async def create_registry_model(payload: ModelRegistryPayload) -> dict[str, Any]:
+    """Add a model to the registry."""
+    try:
+        entry = model_store.sanitize_model_entry(payload.model_dump())
+        stored = model_store.upsert_model(entry)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    logger.info("models: added %s (%s)", stored["name"], stored["id"])
+    return _mask_model(stored)
+
+
+@router.put("/{model_id}")
+async def update_registry_model(
+    model_id: str, payload: ModelRegistryPayload
+) -> dict[str, Any]:
+    """Update a registry model (full replace of the editable fields)."""
+    existing = next(
+        (m for m in model_store.load_model_registry() if m.get("id") == model_id),
+        None,
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"Model {model_id!r} not found")
+    try:
+        entry = model_store.sanitize_model_entry(payload.model_dump())
+        stored = model_store.upsert_model(entry, model_id=model_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    logger.info("models: updated %s (%s)", stored["name"], stored["id"])
+    return _mask_model(stored)
+
+
+@router.delete("/{model_id}")
+async def delete_registry_model(model_id: str) -> dict[str, Any]:
+    """Remove a registry model; the default flag moves to no one."""
+    if not model_store.delete_model(model_id):
+        raise HTTPException(status_code=404, detail=f"Model {model_id!r} not found")
+    logger.info("models: deleted %s", model_id)
+    return {"result": "ok", "id": model_id}
+
+
+class DefaultModelPayload(BaseModel):
+    """Payload for toggling the default model."""
+
+    is_default: bool = True
+
+
+@router.put("/{model_id}/default")
+async def set_registry_default(
+    model_id: str, payload: DefaultModelPayload
+) -> dict[str, Any]:
+    """Mark a registry model as the default (mutually exclusive)."""
+    stored = model_store.set_default_model(model_id, payload.is_default)
+    if stored is None:
+        raise HTTPException(status_code=404, detail=f"Model {model_id!r} not found")
+    logger.info("models: default=%s %s", stored["name"], payload.is_default)
+    return _mask_model(stored)
+
+
 class ModelTestRequest(BaseModel):
-    """Payload for a model connectivity test."""
+    """Payload for a model connectivity test.
+
+    ``api_key`` may carry the plaintext key directly (registry models);
+    ``headers`` / ``extra_body`` are forwarded to the OpenAI client so the
+    exact production configuration is exercised.
+    """
 
     provider: str | None = None
     name: str
     base_url: str | None = None
     api_key_env: str | None = None
+    api_key: str | None = None
+    headers: list[dict[str, str]] | None = None
+    extra_body: dict[str, Any] | None = None
 
 
 @router.post("/test")
 async def test_model(payload: ModelTestRequest) -> dict[str, Any]:
-    """Test connectivity to the model endpoint (lists available models).
+    """Test connectivity to the model endpoint.
 
-    Uses the OpenAI-compatible ``GET {base_url}/models`` endpoint; the API
-    key is resolved from ``api_key_env`` or the standard fallback env vars.
+    Uses an OpenAI-compatible ``chat.completions`` probe (a 1-token ping)
+    so custom headers / extra_body are exercised exactly as production
+    calls would be; the available model list is fetched best-effort via
+    ``GET {base_url}/models``.  The API key is taken from ``api_key`` or
+    resolved from ``api_key_env`` / the standard fallback env vars.
     """
     base_url = (payload.base_url or "").strip()
     if not base_url:
         raise HTTPException(status_code=400, detail="base_url is required")
 
-    api_key = _resolve_api_key(payload.api_key_env)
+    api_key = (payload.api_key or "").strip() or _resolve_api_key(payload.api_key_env)
     if not api_key:
         raise HTTPException(
             status_code=400,
@@ -150,25 +268,54 @@ async def test_model(payload: ModelTestRequest) -> dict[str, Any]:
             detail="openai package is not installed",
         ) from exc
 
-    def _probe() -> tuple[int, list[str]]:
-        client = OpenAI(base_url=base_url, api_key=api_key, timeout=10.0)
+    headers: dict[str, str] = {}
+    for header in payload.headers or []:
+        if isinstance(header, dict) and header.get("key"):
+            headers[str(header["key"])] = str(header.get("value") or "")
+
+    def _probe() -> tuple[str, list[str], str | None]:
+        kwargs: dict[str, Any] = {
+            "base_url": base_url,
+            "api_key": api_key,
+            "timeout": 10.0,
+        }
+        if headers:
+            kwargs["default_headers"] = headers
+        client = OpenAI(**kwargs)
         try:
-            page = client.models.list()
-            names = [getattr(m, "id", "") for m in page.data]
-            return len(names), names
+            completion = client.chat.completions.create(
+                model=payload.name,
+                messages=[{"role": "user", "content": "ping"}],
+                max_tokens=1,
+                **(payload.extra_body or {}),
+            )
+            _ = completion.choices[0].message.content
         finally:
             client.close()
 
+        # Best-effort available-model list (some gateways disable /models).
+        names: list[str] = []
+        try:
+            probe_client = OpenAI(base_url=base_url, api_key=api_key, timeout=10.0)
+            try:
+                page = probe_client.models.list()
+                names = [getattr(m, "id", "") for m in page.data]
+            finally:
+                probe_client.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return "ok", names, None
+
     try:
-        model_count, names = await asyncio.wait_for(
-            asyncio.to_thread(_probe), timeout=15.0
+        result, names, err = await asyncio.wait_for(
+            asyncio.to_thread(_probe), timeout=20.0
         )
     except asyncio.TimeoutError:
         return {
             "result": "failed",
             "name": payload.name,
             "base_url": base_url,
-            "error": "连接超时（15s）",
+            "error": "连接超时（20s）",
         }
     except Exception as exc:
         return {
@@ -178,12 +325,12 @@ async def test_model(payload: ModelTestRequest) -> dict[str, Any]:
             "error": str(exc),
         }
 
-    model_found = not names or payload.name in names
     return {
-        "result": "ok" if model_found else "warning",
+        "result": result,
         "name": payload.name,
         "base_url": base_url,
-        "model_count": model_count,
-        "model_found": model_found,
-        "error": None if model_found else f"端点可用，但未找到模型 {payload.name!r}",
+        "model_count": len(names),
+        "model_found": not names or payload.name in names,
+        "available_models": names[:50],
+        "error": err,
     }

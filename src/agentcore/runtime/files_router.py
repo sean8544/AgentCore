@@ -35,7 +35,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from agentcore.runtime.chat_router import invalidate_agent_graph
-from agentcore.runtime.workspace import KERNEL_FILE_NAMES
+from agentcore.runtime.workspace import ALL_KERNEL_FILE_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -202,8 +202,8 @@ async def write_file(
 ) -> dict[str, Any]:
     """Write (create or overwrite) a text file in the workspace.
 
-    Kernel files (``bootstrap.md`` / ``agent.md`` / ``profile.md`` /
-    ``soul.md``) are routed
+    Kernel files (``bootstrap.md`` / ``agent.md``, plus legacy
+    ``profile.md`` / ``soul.md``) are routed
     through :meth:`Workspace.write_kernel_file` and the cached agent graph
     is invalidated so the next chat uses the updated memory content.
     Files under ``skills/`` likewise trigger invalidation so the SDK's
@@ -213,7 +213,7 @@ async def write_file(
     file_path = _resolve_within_workspace(workspace, path)
     rel_path = _relative_path(workspace, file_path)
 
-    if rel_path in KERNEL_FILE_NAMES:
+    if rel_path in ALL_KERNEL_FILE_NAMES:
         # Keeps the workspace's in-memory kernel cache consistent.
         await asyncio.to_thread(
             workspace.write_kernel_file, rel_path, payload.content

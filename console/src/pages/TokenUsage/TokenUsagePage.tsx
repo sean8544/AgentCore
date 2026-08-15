@@ -15,6 +15,7 @@ import {
 import { DashboardOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { apiClient } from '../../api/client';
+import { useI18n } from '../../i18n';
 
 const { Text } = Typography;
 
@@ -50,6 +51,7 @@ function formatNum(n: number): string {
 }
 
 export default function TokenUsagePage() {
+  const { t } = useI18n();
   const [agents, setAgents] = useState<{ agent_id: string }[]>([]);
   const [agentFilter, setAgentFilter] = useState<string | undefined>(undefined);
   const [days, setDays] = useState<number>(7);
@@ -87,26 +89,26 @@ export default function TokenUsagePage() {
   const maxTotal = Math.max(1, ...daily.map((d) => d.total_tokens));
 
   const dailyColumns: ColumnsType<DailyItem> = [
-    { title: '日期', dataIndex: 'date', width: 140 },
+    { title: t('tokenUsage.date'), dataIndex: 'date', width: 140 },
     {
-      title: '输入',
+      title: t('tokenUsage.input'),
       dataIndex: 'input_tokens',
       align: 'right',
       render: (v: number) => formatNum(v),
     },
     {
-      title: '输出',
+      title: t('tokenUsage.output'),
       dataIndex: 'output_tokens',
       align: 'right',
       render: (v: number) => formatNum(v),
     },
     {
-      title: '合计',
+      title: t('tokenUsage.total'),
       dataIndex: 'total_tokens',
       align: 'right',
       render: (v: number) => <Text strong style={{ color: ORANGE }}>{formatNum(v)}</Text>,
     },
-    { title: '请求数', dataIndex: 'requests', width: 90, align: 'right' },
+    { title: t('tokenUsage.requests'), dataIndex: 'requests', width: 90, align: 'right' },
   ];
 
   const agentColumns: ColumnsType<AgentItem> = [
@@ -115,15 +117,15 @@ export default function TokenUsagePage() {
       dataIndex: 'agent_id',
       render: (id: string) => <Tag style={{ fontSize: 12 }}>{id}</Tag>,
     },
-    { title: '输入', dataIndex: 'input_tokens', align: 'right', render: (v: number) => formatNum(v) },
-    { title: '输出', dataIndex: 'output_tokens', align: 'right', render: (v: number) => formatNum(v) },
+    { title: t('tokenUsage.input'), dataIndex: 'input_tokens', align: 'right', render: (v: number) => formatNum(v) },
+    { title: t('tokenUsage.output'), dataIndex: 'output_tokens', align: 'right', render: (v: number) => formatNum(v) },
     {
-      title: '合计',
+      title: t('tokenUsage.total'),
       dataIndex: 'total_tokens',
       align: 'right',
       render: (v: number) => <Text strong>{formatNum(v)}</Text>,
     },
-    { title: '请求数', dataIndex: 'requests', width: 90, align: 'right' },
+    { title: t('tokenUsage.requests'), dataIndex: 'requests', width: 90, align: 'right' },
   ];
 
   return (
@@ -132,13 +134,13 @@ export default function TokenUsagePage() {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
         <Space>
           <DashboardOutlined style={{ color: ORANGE, fontSize: 16 }} />
-          <Text strong style={{ fontSize: 15 }}>Token 消耗</Text>
+          <Text strong style={{ fontSize: 15 }}>{t('tokenUsage.title')}</Text>
         </Space>
         <Space>
           <Select
             size="small"
             allowClear
-            placeholder="全部 Agent"
+            placeholder={t('tokenUsage.allAgents')}
             value={agentFilter}
             onChange={(v) => setAgentFilter(v)}
             style={{ width: 160 }}
@@ -149,9 +151,9 @@ export default function TokenUsagePage() {
             value={days}
             onChange={(v) => setDays(Number(v))}
             options={[
-              { value: 7, label: '近 7 天' },
-              { value: 14, label: '近 14 天' },
-              { value: 30, label: '近 30 天' },
+              { value: 7, label: t('tokenUsage.last7Days') },
+              { value: 14, label: t('tokenUsage.last14Days') },
+              { value: 30, label: t('tokenUsage.last30Days') },
             ]}
           />
         </Space>
@@ -161,23 +163,23 @@ export default function TokenUsagePage() {
       <Row gutter={16} style={{ marginBottom: 16 }}>
         <Col span={6}>
           <Card size="small">
-            <Statistic title="总 Token" value={data?.totals.total_tokens ?? 0}
+            <Statistic title={t('tokenUsage.totalToken')} value={data?.totals.total_tokens ?? 0}
               valueStyle={{ color: ORANGE, fontSize: 24 }} />
           </Card>
         </Col>
         <Col span={6}>
           <Card size="small">
-            <Statistic title="输入 Token" value={data?.totals.input_tokens ?? 0} valueStyle={{ fontSize: 24 }} />
+            <Statistic title={t('tokenUsage.inputToken')} value={data?.totals.input_tokens ?? 0} valueStyle={{ fontSize: 24 }} />
           </Card>
         </Col>
         <Col span={6}>
           <Card size="small">
-            <Statistic title="输出 Token" value={data?.totals.output_tokens ?? 0} valueStyle={{ fontSize: 24 }} />
+            <Statistic title={t('tokenUsage.outputToken')} value={data?.totals.output_tokens ?? 0} valueStyle={{ fontSize: 24 }} />
           </Card>
         </Col>
         <Col span={6}>
           <Card size="small">
-            <Statistic title="请求次数" value={data?.totals.requests ?? 0} valueStyle={{ fontSize: 24 }} />
+            <Statistic title={t('tokenUsage.requestCount')} value={data?.totals.requests ?? 0} valueStyle={{ fontSize: 24 }} />
           </Card>
         </Col>
       </Row>
@@ -186,12 +188,12 @@ export default function TokenUsagePage() {
         {/* ── Daily trend (CSS bars) ── */}
         <Col span={12}>
           <Card
-            title={<Space><ThunderboltOutlined style={{ color: ORANGE }} /><span>每日趋势</span></Space>}
+            title={<Space><ThunderboltOutlined style={{ color: ORANGE }} /><span>{t('tokenUsage.dailyTrend')}</span></Space>}
             size="small"
             styles={{ body: { minHeight: 220 } }}
           >
             {daily.length === 0 ? (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={loading ? '加载中…' : '暂无数据'} />
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={loading ? t('tokenUsage.noData') : t('tokenUsage.noDataAvailable')} />
             ) : (
               <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, height: 200, padding: '8px 4px 0' }}>
                 {daily.map((d) => (
@@ -215,7 +217,7 @@ export default function TokenUsagePage() {
 
         {/* ── Per-agent breakdown ── */}
         <Col span={12}>
-          <Card title={<span>按 Agent 统计</span>} size="small" styles={{ body: { padding: 0 } }}>
+          <Card title={<span>{t('tokenUsage.agentBreakdown')}</span>} size="small" styles={{ body: { padding: 0 } }}>
             <Table<AgentItem>
               rowKey="agent_id"
               size="small"
@@ -229,7 +231,7 @@ export default function TokenUsagePage() {
       </Row>
 
       {/* ── Daily table ── */}
-      <Card title={<span>每日明细</span>} size="small" style={{ marginTop: 16 }} styles={{ body: { padding: 0 } }}>
+      <Card title={<span>{t('tokenUsage.dailyDetail')}</span>} size="small" style={{ marginTop: 16 }} styles={{ body: { padding: 0 } }}>
         <Table<DailyItem>
           rowKey="date"
           size="small"

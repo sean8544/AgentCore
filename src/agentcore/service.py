@@ -58,6 +58,11 @@ class AgentService:
         self,
         agent_id: str,
         model: dict[str, Any] | None = None,
+        description: str | None = None,
+        system_prompt: str | None = None,
+        enable_subagents: bool | None = None,
+        inherit_parent_tools: bool | None = None,
+        interrupt_rules: list[dict[str, Any]] | None = None,
     ) -> Any:
         """Create an Agent workspace and its ``agent.json`` configuration.
 
@@ -67,18 +72,38 @@ class AgentService:
         resulting configuration is persisted to ``agent.json``.  The
         agent state is persisted so the agent survives restarts.
 
+        Optional settings (*description*, *system_prompt*,
+        *enable_subagents*, *inherit_parent_tools*) are written into the
+        ``settings`` section of ``agent.json`` so the SubAgent registry
+        and the agent factory can pick them up at graph-build time.
+
         Returns the created :class:`Workspace`.
         """
         manager = self._require_agent_manager()
         workspace = await manager.get_or_create_workspace(agent_id)
 
-        # Write the agent configuration (model overrides merge over the
-        # defaults; tools / settings keep their default shape).
+        # Build the agent configuration to merge over workspace defaults.
         config: dict[str, Any] = {}
         if model:
             config["model"] = {
                 k: v for k, v in model.items() if v not in (None, "")
             }
+
+        # Settings section: description, system_prompt, subagent switches.
+        settings: dict[str, Any] = {}
+        if description:
+            settings["description"] = description
+        if system_prompt:
+            settings["system_prompt"] = system_prompt
+        if enable_subagents is not None:
+            settings["enable_subagents"] = enable_subagents
+        if inherit_parent_tools is not None:
+            settings["inherit_parent_tools"] = inherit_parent_tools
+        if interrupt_rules:
+            settings["interrupt_rules"] = interrupt_rules
+        if settings:
+            config["settings"] = settings
+
         if config:
             workspace.write_agent_config(config)
 
