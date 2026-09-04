@@ -24,6 +24,7 @@ so the console can display the hint.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Any
 
@@ -38,6 +39,45 @@ router = APIRouter(prefix="/api/agents/{agent_id}/mcp", tags=["mcp"])
 _SERVER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 _VALID_TRANSPORTS = {"stdio", "sse", "streamable_http", "http"}
+
+
+# ---------------------------------------------------------------------------
+# Well-known MCP server presets
+#
+# Each preset is a ready-to-use server entry that the console can offer as
+# one-click templates in the "Add MCP Server" dialog.
+# ---------------------------------------------------------------------------
+
+MCP_PRESETS: dict[str, dict[str, Any]] = {
+    "playwright": {
+        "server_id": "playwright",
+        "name": "Playwright 浏览器",
+        "transport": "stdio",
+        "command": "npx -y @playwright/mcp@latest",
+        "description": "微软官方 Playwright MCP — 通过可访问性树驱动浏览器自动化，"
+        "支持导航、点击、输入、截图、JS 执行等操作",
+        "icon": "🌐",
+        "category": "browser",
+    },
+    "filesystem": {
+        "server_id": "filesystem",
+        "name": "文件系统",
+        "transport": "stdio",
+        "command": f"npx -y @modelcontextprotocol/server-filesystem {os.path.expanduser('~')}",
+        "description": "官方文件系统 MCP — 读写本地文件系统（默认用户主目录）",
+        "icon": "📁",
+        "category": "file",
+    },
+    "web-search": {
+        "server_id": "web-search",
+        "name": "Web 搜索",
+        "transport": "stdio",
+        "command": "npx -y @keenable/mcp",
+        "description": "免费 Web 搜索 MCP — 联网搜索 + 网页内容抓取，无需 API Key（1000 次/小时）",
+        "icon": "🔍",
+        "category": "search",
+    },
+}
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +146,17 @@ async def _invalidate_graph(app_state: Any, agent_id: str) -> None:
         await invalidate_agent_graph(app_state, agent_id)
     except Exception:  # noqa: BLE001 — invalidation is best-effort
         logger.warning("Failed to invalidate agent graph for %s", agent_id)
+
+
+# ---------------------------------------------------------------------------
+# Routes — presets
+# ---------------------------------------------------------------------------
+
+
+@router.get("/presets")
+async def list_mcp_presets() -> dict[str, Any]:
+    """Return well-known MCP server presets (templates) for the console."""
+    return {"presets": list(MCP_PRESETS.values())}
 
 
 # ---------------------------------------------------------------------------
@@ -229,8 +280,12 @@ async def test_mcp_connection(
         raise HTTPException(status_code=404, detail=f"MCP server {server_id!r} not found")
 
     try:
-        tools = await fetch_server_tools(entry)
+        # Use a longer timeout for manual test (30s) — first-run npx downloads
+        # can be slow, and the default 15s timeout is too tight for that.
+        tools = await fetch_server_tools(entry, timeout=30.0)
     except McpBackendUnavailable as exc:
+        return {"ok": False, "error": str(exc), "tools": []}
+    except TimeoutError as exc:
         return {"ok": False, "error": str(exc), "tools": []}
     except HTTPException:
         raise

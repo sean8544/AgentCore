@@ -1,0 +1,85 @@
+# =============================================================================
+# AgentCore — Docker Compose
+#
+# Usage:
+#   docker compose up -d          # 启动（默认 SQLite）
+#   docker compose up -d agentcore postgres  # 启动 PostgreSQL 模式
+#   docker compose logs -f        # 查看日志
+#   docker compose down           # 停止
+#
+# Sub-path deployment (K8s multi-instance):
+#   AGENTCORE_BASE_PATH=/instance01 docker compose up -d
+#
+# PostgreSQL mode:
+#   1. Copy .env.example to .env
+#   2. Set AGENTCORE_CHECKPOINTER_BACKEND=postgresql in .env
+#   3. docker compose up -d
+# =============================================================================
+
+services:
+  agentcore:
+    build:
+      context: .
+      args:
+        # 构建时子路径前缀（可选）
+        AGENTCORE_BASE_PATH: ${AGENTCORE_BASE_PATH:-}
+    container_name: agentcore
+    ports:
+      - "8000:8000"
+    volumes:
+      # 持久化数据（agent 配置、会话、技能池等）
+      - agentcore-data:/app/.agentcore
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - AGENTCORE_DATA_DIR=/app/.agentcore
+      # 运行时子路径前缀（覆盖构建时值，K8s 多实例场景）
+      # 示例: AGENTCORE_BASE_PATH=/instance01
+      - AGENTCORE_BASE_PATH=${AGENTCORE_BASE_PATH:-}
+      # Checkpointer 后端配置
+      - AGENTCORE_CHECKPOINTER_BACKEND=${AGENTCORE_CHECKPOINTER_BACKEND:-sqlite}
+      # PostgreSQL 配置（仅在 backend=postgresql 时生效）
+      - AGENTCORE_POSTGRES_HOST=${AGENTCORE_POSTGRES_HOST:-postgres}
+      - AGENTCORE_POSTGRES_PORT=${AGENTCORE_POSTGRES_PORT:-5432}
+      - AGENTCORE_POSTGRES_DB=${AGENTCORE_POSTGRES_DB:-agentcore}
+      - AGENTCORE_POSTGRES_USER=${AGENTCORE_POSTGRES_USER:-agentcore}
+      - AGENTCORE_POSTGRES_PASSWORD=${AGENTCORE_POSTGRES_PASSWORD:-agentcore_secret}
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # PostgreSQL 服务（可选 - 仅在 AGENTCORE_CHECKPOINTER_BACKEND=postgresql 时使用）
+  # 启动方式: docker compose up -d postgres
+  postgres:
+    image: postgres:16-alpine
+    container_name: agentcore-postgres
+    environment:
+      POSTGRES_DB: ${AGENTCORE_POSTGRES_DB:-agentcore}
+      POSTGRES_USER: ${AGENTCORE_POSTGRES_USER:-agentcore}
+      POSTGRES_PASSWORD: ${AGENTCORE_POSTGRES_PASSWORD:-agentcore_secret}
+    ports:
+      - "${AGENTCORE_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - agentcore-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AGENTCORE_POSTGRES_USER:-agentcore}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  agentcore-data:
+    driver: local
+  agentcore-pgdata:
+    driver: local

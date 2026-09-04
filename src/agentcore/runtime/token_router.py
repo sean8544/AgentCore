@@ -77,6 +77,7 @@ def record_token_usage(
     agent_id: str,
     input_tokens: int,
     output_tokens: int,
+    model: str = "",
 ) -> None:
     """Append one usage record for *agent_id* (called by the chat router).
 
@@ -91,6 +92,7 @@ def record_token_usage(
             "ts": now.isoformat(),
             "date": now.strftime("%Y-%m-%d"),
             "agent_id": agent_id,
+            "model": model,
             "input_tokens": int(input_tokens),
             "output_tokens": int(output_tokens),
             "total_tokens": int(input_tokens) + int(output_tokens),
@@ -125,6 +127,7 @@ async def get_token_usage(
 
     daily: dict[str, dict[str, int]] = {}
     by_agent: dict[str, dict[str, int]] = {}
+    by_model: dict[str, dict[str, int]] = {}
     totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "requests": 0}
 
     for rec in _load_records():
@@ -157,6 +160,16 @@ async def get_token_usage(
         agg["total_tokens"] += tot
         agg["requests"] += 1
 
+        rec_model = rec.get("model", "") or "unknown"
+        model_agg = by_model.setdefault(
+            rec_model,
+            {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "requests": 0},
+        )
+        model_agg["input_tokens"] += inp
+        model_agg["output_tokens"] += out
+        model_agg["total_tokens"] += tot
+        model_agg["requests"] += 1
+
         totals["input_tokens"] += inp
         totals["output_tokens"] += out
         totals["total_tokens"] += tot
@@ -173,5 +186,9 @@ async def get_token_usage(
         "by_agent": [
             {"agent_id": aid, **by_agent[aid]}
             for aid in sorted(by_agent)
+        ],
+        "by_model": [
+            {"model": mid, **by_model[mid]}
+            for mid in sorted(by_model)
         ],
     }

@@ -140,27 +140,27 @@ else
     $VENV_PYTHON -m pip install -q -e .
 fi
 
-# ── 4. 前端依赖检查 + 模式判定 ──────────────────────────────────────────────
+# ── 4. 前端依赖检查 + 构建（每次启动都重新 build 确保最新代码生效） ──────
 CONSOLE_DIR="$ROOT/console"
 CONSOLE_DIST="$CONSOLE_DIR/dist"
-PRODUCTION_MODE=false
 
-if [[ -f "$CONSOLE_DIST/index.html" ]]; then
-    PRODUCTION_MODE=true
-    log_step "检测到 console/dist —— 生产模式：由后端托管前端静态文件"
-else
-    log_step "开发模式：console/dist 不存在，将并行启动 vite dev server"
-    if ! command -v npm &>/dev/null; then
-        log_err "未找到 npm。开发模式需要 Node.js，请先安装，或先执行 npm run build 生成 console/dist。"
-        exit 1
-    fi
-    if [[ ! -d "$CONSOLE_DIR/node_modules" ]]; then
-        log_step "console/node_modules 不存在，执行 npm install ..."
-        (cd "$CONSOLE_DIR" && npm install)
-    else
-        log_step "前端依赖已就绪 (console/node_modules)"
-    fi
+if ! command -v npm &>/dev/null; then
+    log_err "未找到 npm。请安装 Node.js。"
+    exit 1
 fi
+
+if [[ ! -d "$CONSOLE_DIR/node_modules" ]]; then
+    log_step "console/node_modules 不存在，执行 npm install ..."
+    (cd "$CONSOLE_DIR" && npm install)
+else
+    log_step "前端依赖已就绪 (console/node_modules)"
+fi
+
+# 每次启动都重新构建前端，确保最新代码生效
+log_step "构建前端 (npm run build) ..."
+(cd "$CONSOLE_DIR" && npm run build)
+PRODUCTION_MODE=true
+log_step "前端构建完成 —— 生产模式：由后端托管前端静态文件"
 
 # ── 5. 并行启动后端 + 前端（后台进程，日志写入 logs/） ──────────────────────
 LOG_DIR="$ROOT/logs"

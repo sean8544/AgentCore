@@ -35,5 +35,20 @@
   "serverIdExample": "e.g. filesystem",
   "displayNameExample": "e.g. File System Service",
   "startCommandExample": "e.g. npx -y @modelcontextprotocol/server-filesystem /path",
-  "serviceUrlExample": "e.g. http://localhost:8000/mcp"
+  "serviceUrlExample": "e.g. http://localhost:8000/mcp",
+  "preset": "Quick Preset",
+  "presetNone": "Custom Configuration",
+  "presetCustom": "Custom",
+  "presetBrowserUse": "Browser Automation",
+  "presetBrowserUseDesc": "Playwright-powered: navigate, click, type, screenshot & more",
+  "presetFilesystem": "File System Access",
+  "presetFilesystemDesc": "Read and write local files",
+  "presetWebSearch": "Web Search",
+  "presetWebSearchDesc": "Search the web for real-time information",
+  "presetAdded": "Added preset {{id}}",
+  "addFromPreset": "Add from Preset",
+  "orCustom": "or custom configuration",
+  "presetCategoryBrowser": "Browser",
+  "presetCategoryFile": "File",
+  "presetCategorySearch": "Search"
 }

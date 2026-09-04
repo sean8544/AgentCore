@@ -91,10 +91,12 @@ def test_tool_exclusion_uses_public_middleware(captured_create):
 def test_local_backend_always_excludes_execute(captured_create):
     # ``execute`` is only supported by the sandbox backend, so the default
     # local backend must exclude it even with an empty disabled list.
+    # ``task`` is excluded as well because subagents are opt-in and no
+    # subagent specs are injected when ``enable_subagents`` is false.
     AgentFactory().create_agent(_config())
     exclusion = _exclusion_middleware(captured_create.get("middleware", []))
     assert len(exclusion) == 1
-    assert exclusion[0]._excluded == frozenset({"execute"})
+    assert exclusion[0]._excluded == frozenset({"execute", "task"})
 
 
 def test_no_extra_exclusion_on_sandbox_backend(captured_create):
@@ -188,28 +190,34 @@ def _fake_workspace(config: dict[str, Any]) -> SimpleNamespace:
     )
 
 
-def test_chat_router_delegates_to_factory(monkeypatch):
-    monkeypatch.setattr(chat_router, "get_checkpointer", lambda chat_state: object())
+async def test_chat_router_delegates_to_factory(monkeypatch):
+    async def _fake_checkpointer(chat_state):
+        return object()
+
+    monkeypatch.setattr(chat_router, "get_checkpointer", _fake_checkpointer)
     config = _config()
     workspace = _fake_workspace(config)
     factory = _FakeFactory()
 
-    graph = chat_router._resolve_agent_graph("agent-x", workspace, factory=factory)
+    graph = await chat_router._resolve_agent_graph("agent-x", workspace, factory=factory)
     assert graph is not None
     assert len(factory.calls) == 1
     call = factory.calls[0]
     assert call["agent_config"] is config
     assert call["checkpointer"] is not None
     # Cached — second lookup must not rebuild.
-    assert chat_router._resolve_agent_graph("agent-x", workspace, factory=factory) is graph
+    assert await chat_router._resolve_agent_graph("agent-x", workspace, factory=factory) is graph
     assert len(factory.calls) == 1
 
 
-def test_chat_router_passes_workspace_dir(monkeypatch):
-    monkeypatch.setattr(chat_router, "get_checkpointer", lambda chat_state: object())
+async def test_chat_router_passes_workspace_dir(monkeypatch):
+    async def _fake_checkpointer(chat_state):
+        return object()
+
+    monkeypatch.setattr(chat_router, "get_checkpointer", _fake_checkpointer)
     workspace = _fake_workspace(_config())
     factory = _FakeFactory()
 
-    chat_router._resolve_agent_graph("agent-y", workspace, factory=factory)
+    await chat_router._resolve_agent_graph("agent-y", workspace, factory=factory)
     assert factory.calls[0]["workspace_dir"] == Path("ws/dir")
     assert factory.calls[0]["workspace"] is workspace

@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentCore 问题清单与整改建议</title>
+<style>
+  :root {
+    --primary: #4285f4;
+    --primary-light: #e8f0fe;
+    --success: #34a853;
+    --warning: #fbbc05;
+    --danger: #ea4335;
+    --text: #202124;
+    --text-secondary: #5f6368;
+    --bg: #ffffff;
+    --bg-secondary: #f8f9fa;
+    --border: #dadce0;
+    --code-bg: #f1f3f4;
+    --shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.08);
+    --shadow-lg: 0 4px 16px rgba(0,0,0,0.12);
+    --radius: 8px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans SC', sans-serif; color: var(--text); line-height: 1.7; background: var(--bg-secondary); }
+  .top-nav { position: fixed; top: 0; left: 0; right: 0; z-index: 1000; background: var(--bg); border-bottom: 1px solid var(--border); height: 56px; display: flex; align-items: center; padding: 0 24px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+  .top-nav .logo { font-size: 18px; font-weight: 700; color: var(--primary); display: flex; align-items: center; gap: 8px; }
+  .top-nav .version { font-size: 12px; background: #fce8e6; color: var(--danger); padding: 2px 8px; border-radius: 12px; margin-left: 8px; font-weight: 500; }
+  .layout { display: flex; margin-top: 56px; min-height: calc(100vh - 56px); }
+  .sidebar { width: 280px; position: fixed; top: 56px; bottom: 0; left: 0; background: var(--bg); border-right: 1px solid var(--border); overflow-y: auto; padding: 16px 0; }
+  .sidebar h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-secondary); padding: 12px 20px 6px; font-weight: 600; }
+  .sidebar a { display: block; padding: 7px 20px; color: var(--text-secondary); text-decoration: none; font-size: 14px; border-left: 3px solid transparent; transition: all 0.15s; }
+  .sidebar a:hover { background: var(--bg-secondary); color: var(--text); }
+  .sidebar a.active { color: var(--primary); background: var(--primary-light); border-left-color: var(--primary); font-weight: 500; }
+  .main { margin-left: 280px; flex: 1; max-width: 960px; padding: 32px 40px 80px; }
+  .hero { background: linear-gradient(135deg, #ea4335 0%, #fbbc05 100%); color: white; padding: 48px 40px; border-radius: 16px; margin-bottom: 40px; box-shadow: var(--shadow-lg); }
+  .hero h1 { font-size: 36px; font-weight: 700; margin-bottom: 12px; }
+  .hero p { font-size: 16px; opacity: 0.9; max-width: 600px; line-height: 1.6; }
+  .hero .meta { margin-top: 16px; font-size: 13px; opacity: 0.7; }
+  .section { margin-bottom: 48px; scroll-margin-top: 72px; }
+  .section h2 { font-size: 24px; font-weight: 700; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 2px solid var(--danger); display: flex; align-items: center; gap: 10px; }
+  .section h2 .icon { font-size: 28px; }
+  .section h3 { font-size: 18px; font-weight: 600; margin: 24px 0 12px; }
+  .section h4 { font-size: 15px; font-weight: 600; margin: 16px 0 8px; color: var(--text-secondary); }
+  .section p { margin-bottom: 12px; }
+  .section ul, .section ol { margin: 8px 0 16px 24px; }
+  .section li { margin-bottom: 6px; }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; background: var(--bg); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); }
+  th { background: var(--bg-secondary); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); padding: 12px 16px; text-align: left; border-bottom: 2px solid var(--border); }
+  td { padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 14px; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--bg-secondary); }
+  code { background: var(--code-bg); padding: 2px 6px; border-radius: 4px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 13px; }
+  pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: var(--radius); overflow-x: auto; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 13px; line-height: 1.6; margin: 12px 0; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .callout { padding: 16px 20px; border-radius: var(--radius); margin: 16px 0; border-left: 4px solid; }
+  .callout-info { background: #e8f0fe; border-color: var(--primary); }
+  .callout-warn { background: #fef7e0; border-color: var(--warning); }
+  .callout-danger { background: #fce8e6; border-color: var(--danger); }
+  .callout-success { background: #e6f4ea; border-color: var(--success); }
+  .callout-title { font-weight: 600; margin-bottom: 4px; }
+  .card { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; box-shadow: var(--shadow); }
+  .card h4 { margin-top: 0; color: var(--primary); font-size: 15px; }
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin: 16px 0; }
+  .card-grid .card { margin-bottom: 0; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+  .badge-blue { background: var(--primary-light); color: var(--primary); }
+  .badge-green { background: #e6f4ea; color: var(--success); }
+  .badge-yellow { background: #fef7e0; color: #e37400; }
+  .badge-red { background: #fce8e6; color: var(--danger); }
+  .issue-card { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; box-shadow: var(--shadow); border-left: 4px solid; }
+  .issue-card.high { border-left-color: var(--danger); }
+  .issue-card.medium { border-left-color: var(--warning); }
+  .issue-card.low { border-left-color: var(--primary); }
+  .issue-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .issue-header h4 { margin: 0; font-size: 16px; }
+  .issue-desc { color: var(--text-secondary); font-size: 14px; margin-bottom: 10px; }
+  .issue-impact { font-size: 13px; }
+  .issue-fix { background: var(--bg-secondary); padding: 12px 16px; border-radius: 6px; margin-top: 10px; font-size: 14px; }
+  .phase-card { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; box-shadow: var(--shadow); }
+  .phase-card h4 { margin-top: 0; display: flex; align-items: center; gap: 8px; }
+  .phase-timeline { display: flex; gap: 12px; margin: 20px 0; flex-wrap: wrap; }
+  .phase-step { flex: 1; min-width: 180px; background: var(--bg); border: 2px solid var(--border); border-radius: var(--radius); padding: 16px; text-align: center; }
+  .phase-step.active { border-color: var(--danger); }
+  .phase-step .phase-num { font-size: 24px; font-weight: 700; color: var(--primary); }
+  .phase-step .phase-name { font-weight: 600; margin: 4px 0; }
+  .phase-step .phase-time { font-size: 12px; color: var(--text-secondary); }
+  @media (max-width: 1024px) { .sidebar { display: none; } .main { margin-left: 0; padding: 24px 20px; } }
+  @media print { .top-nav, .sidebar { display: none; } .main { margin-left: 0; max-width: 100%; } }
+</style>
+</head>
+<body>
+<nav class="top-nav">
+  <div class="logo">
+    <svg viewBox="0 0 28 28" fill="none" width="28" height="28"><circle cx="14" cy="14" r="12" fill="#ea4335"/><path d="M9 14l3 3 7-7" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    AgentCore 问题清单与整改建议
+    <span class="version">v1.0</span>
+  </div>
+</nav>
+<div class="layout">
+<aside class="sidebar">
+  <h3>已知缺陷</h3>
+  <a href="#bugs" class="active">已完成功能中的缺陷</a>
+  <h3>架构问题</h3>
+  <a href="#arch">设计层面的架构问题</a>
+  <h3>安全</h3>
+  <a href="#security">安全相关问题</a>
+  <h3>性能</h3>
+  <a href="#perf">性能与可扩展性</a>
+  <h3>前端</h3>
+  <a href="#ui">前端 UI/UX 问题</a>
+  <h3>依赖</h3>
+  <a href="#deps">第三方依赖风险</a>
+  <h3>差距</h3>
+  <a href="#gap">未完成功能差距</a>
+  <h3>工程</h3>
+  <a href="#docs">文档与工程规范</a>
+  <h3>路线图</h3>
+  <a href="#roadmap">整改优先级与路线图</a>
+</aside>
+<main class="main">
+
+<div class="hero">
+  <h1>问题清单与整改建议</h1>
+  <p>列出当前软件可能存在的问题、已知缺陷、设计局限，以及具体的整改建议。</p>
+  <div class="meta">版本 1.0 &nbsp;·&nbsp; 2026-08-31</div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="bugs">
+  <h2><span class="icon">🐛</span> 已完成功能中的已知缺陷</h2>
+
+  <div class="issue-card high">
+    <div class="issue-header">
+      <h4>1.1 HITL 审批：AsyncSqliteSaver 同步接口失效</h4>
+      <span class="badge badge-red">🔴 高</span>
+    </div>
+    <div class="issue-desc">生产环境 Checkpointer 使用 AsyncSqliteSaver，其同步 get_state() 方法不可用，异常被 except Exception 静默吞掉。导致 _get_all_interrupt_tools 静默返回空列表，fallback 只生成 1 个 decision，而 SDK 要求 decisions 数量等于 action_requests 数量。</div>
+    <div class="issue-impact"><strong>影响</strong>：多工具同时触发审批时，审批全部失败并进入死循环。</div>
+    <div class="issue-fix"><strong>整改</strong>：所有读取 interrupt 状态的辅助函数改为 async，使用 agent_graph.aget_state()；兼容 value 为 pydantic HITLRequest 对象；单元测试使用 AsyncMock。</div>
+  </div>
+
+  <div class="issue-card high">
+    <div class="issue-header">
+      <h4>1.2 SubAgent 委派列表白名单 Bug</h4>
+      <span class="badge badge-red">🔴 高</span>
+    </div>
+    <div class="issue-desc">_subagent_summaries 函数在构建子代理列表时未正确传递 subagent_ids 参数，导致委派列表显示不准确。</div>
+    <div class="issue-impact"><strong>影响</strong>：主 Agent 可能委派给不可用的子 Agent，或遗漏可用的子 Agent。</div>
+    <div class="issue-fix"><strong>整改</strong>：确保 SubAgentRegistry 在构建委派列表时完整传递所有子 Agent 的 ID 和描述；添加端到端测试验证。</div>
+  </div>
+
+  <div class="issue-card high">
+    <div class="issue-header">
+      <h4>1.3 审批按钮点击无响应</h4>
+      <span class="badge badge-red"> 高</span>
+    </div>
+    <div class="issue-desc">新会话中 currentSessionId 为 null，导致 submitApproval 静默退出，审批按钮点击无任何反馈。</div>
+    <div class="issue-impact"><strong>影响</strong>：用户无法完成 HITL 审批流程。</div>
+    <div class="issue-fix"><strong>整改</strong>：审批请求发送前校验 session_id 是否存在；缺失时给出明确错误提示。</div>
+  </div>
+
+  <div class="issue-card medium">
+    <div class="issue-header">
+      <h4>1.4 SDK 模型对象 repr 泄漏到 UI</h4>
+      <span class="badge badge-yellow">🟠 中</span>
+    </div>
+    <div class="issue-desc">OpenSandbox SDK 返回的 pydantic 模型对象直接 str() 后会把整个 repr 渲染到前端，撑破表格列。</div>
+    <div class="issue-fix"><strong>整改</strong>：归一化函数按语义优先级取字段：getattr(raw, 'state') → getattr(raw, 'value') → str(raw)。</div>
+  </div>
+
+  <div class="issue-card medium">
+    <div class="issue-header">
+      <h4>1.5 沙箱同步 manifest 未绑定 container_id</h4>
+      <span class="badge badge-yellow">🟠 中</span>
+    </div>
+    <div class="issue-desc">沙箱重启后文件同步显示成功但容器为空，因为 .sync_manifest.json 未绑定 container_id。</div>
+    <div class="issue-fix"><strong>整改</strong>：manifest 中记录 container_id；同步前校验是否匹配；不匹配时自动重置并全量同步。</div>
+  </div>
+
+  <div class="issue-card medium">
+    <div class="issue-header">
+      <h4>1.7 沙箱同步三层 Bug</h4>
+      <span class="badge badge-yellow"> 中</span>
+    </div>
+    <div class="issue-desc">status 命令盲信 manifest；push 命令未验证容器连接状态；UI 调用了错误的同步端点。</div>
+    <div class="issue-fix"><strong>整改</strong>：status 实际查询容器文件列表；push 前验证容器可达性；修正 UI 调用路径。</div>
+  </div>
+
+  <div class="issue-card low">
+    <div class="issue-header">
+      <h4>1.6 Token 统计缺失</h4>
+      <span class="badge badge-blue">🟡 低</span>
+    </div>
+    <div class="issue-desc">stream_chat 端点在部分路径下未调用 record_token_usage，导致 SSE 流式对话的 token 消耗未被记录。</div>
+    <div class="issue-fix"><strong>整改</strong>：在所有对话完成路径（包括 SSE 流结束）统一调用 record_token_usage。</div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="arch">
+  <h2><span class="icon">️</span> 设计层面的架构问题</h2>
+
+  <div class="issue-card high">
+    <div class="issue-header">
+      <h4>2.1 全局锁成为并发瓶颈</h4>
+      <span class="badge badge-red">🔴 高</span>
+    </div>
+    <div class="issue-desc">MultiAgentManager 使用全局 asyncio.Lock 保护 _workspaces 和 _agent_locks 字典。所有 Agent 的创建、加载、卸载操作都需要获取这个全局锁。</div>
+    <div class="issue-impact"><strong>影响</strong>：多 Agent 并发对话时可能互相阻塞；大量 Agent 启停操作时响应变慢。</div>
+    <div class="issue-fix"><strong>整改</strong>：短期拆分为 per-agent 锁 + 轻量级字典操作；中期引入外部存储（Redis）；长期支持多进程/多实例部署。</div>
+  </div>
+
+  <div class="issue-card medium">
+    <div class="issue-header">
+      <h4>2.2 请求驱动模型的局限</h4>
+      <span class="badge badge-yellow">🟡 中</span>
+    </div>
+    <div class="issue-desc">Agent 无常驻进程，无法主动推送消息、无法执行长时间后台任务、无法实现真正的异步委派。</div>
+    <div class="issue-fix"><strong>整改</strong>：短期利用 CronManager 内部任务系统；中期引入消息队列（Redis Streams）；长期支持 Agent Protocol 异步任务模式。</div>
+  </div>
+
+  <div class="issue-card medium">
+    <div class="issue-header">
+      <h4>2.3 图缓存失效粒度过粗</h4>
+      <span class="badge badge-yellow">🟡 中</span>
+    </div>
+    <div class="issue-desc">安全配置变更失效所有 Agent 的图缓存；SubAgent 列表变更触发所有主 Agent 图重建。</div>
+    <div class="issue-fix"><strong>整改</strong>：安全配置变更时只失效受影响的 Agent；SubAgent 变更时只失效直接相关的主 Agent。</div>
+  </div>
+
+  <div class="issue-card medium">
+    <div class="issue-header">
+      <h4>2.4 SubAgent 字段不足</h4>
+      <span class="badge badge-yellow">🟠 中</span>
+    </div>
+    <div class="issue-desc">子 Agent 仅 3 个字段（name/description/system_prompt），无法独立配置工具集、模型、权限规则、HITL 规则。</div>
+    <div class="issue-fix"><strong>整改</strong>：在 agent.json 的 subagents 配置中扩展 tools、model_id、permissions、interrupt_rules 字段。</div>
+  </div>
+
+  <div class="issue-card medium">
+    <div class="issue-header">
+      <h4>2.5 SQLite Checkpointer 的并发限制</h4>
+      <span class="badge badge-yellow">🟠 中</span>
+    </div>
+    <div class="issue-desc">SQLite 不支持多实例共享写入，K8s 多实例部署时必须确保每个实例挂载独立的持久卷。</div>
+    <div class="issue-fix"><strong>整改</strong>：启动时检测 Checkpointer 是否可写并给出警告；生产环境推荐 PostgreSQL Checkpointer。</div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="security">
+  <h2><span class="icon">🛡️</span> 安全相关问题</h2>
+
+  <div class="issue-card high">
+    <div class="issue-header">
+      <h4>3.1 无认证/多租户支持</h4>
+      <span class="badge badge-red"> 高</span>
+    </div>
+    <div class="issue-desc">当前系统无认证机制，任何人访问端口即可使用所有功能。</div>
+    <div class="issue-fix"><strong>整改</strong>：Phase 1 引入 API Key 认证 → Phase 2 JWT Token + 用户管理 → Phase 3 RBAC（admin/operator/viewer）。</div>
+  </div>
+
+  <div class="issue-card medium">
+    <div class="issue-header">
+      <h4>3.2 工作区逃逸风险</h4>
+      <span class="badge badge-yellow">🟠 中</span>
+    </div>
+    <div class="issue-desc">execute 工具允许执行任意 Shell 命令，理论上可通过 cd ../../ 等方式访问其他 Agent 的工作区。</div>
+    <div class="issue-fix"><strong>整改</strong>：execute 工具的 Shell 环境中设置 HOME 和 PWD 到 Agent 工作区；考虑使用 chroot 或容器隔离。</div>
+  </div>
+
+  <div class="issue-card medium">
+    <div class="issue-header">
+      <h4>3.3 环境变量持久化的安全边界</h4>
+      <span class="badge badge-yellow">🟡 中</span>
+    </div>
+    <div class="issue-desc">envs.json 中存储的 API Key 以明文形式保存在磁盘，无加密保护。</div>
+    <div class="issue-fix"><strong>整改</strong>：使用操作系统密钥链存储敏感值，或使用 AES 加密存储。</div>
+  </div>
+
+  <div class="issue-card medium">
+    <div class="issue-header">
+      <h4>3.4 审计日志可被清空</h4>
+      <span class="badge badge-yellow"> 中</span>
+    </div>
+    <div class="issue-desc">approval_audit_log.json 没有文件完整性保护（如数字签名或哈希链）。</div>
+    <div class="issue-fix"><strong>整改</strong>：每条记录添加前一条的哈希值（哈希链）；定期备份到只读存储。</div>
+  </div>
+
+  <div class="issue-card medium">
+    <div class="issue-header">
+      <h4>3.5 默认配置安全不足</h4>
+      <span class="badge badge-yellow">🟡 中</span>
+    </div>
+    <div class="issue-desc">uvicorn 默认绑定 0.0.0.0:8000，无 HTTPS 支持，无 CORS 限制。</div>
+    <div class="issue-fix"><strong>整改</strong>：默认绑定 127.0.0.1；添加 CORS 配置选项；文档强调生产环境必须使用反向代理 + HTTPS。</div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="perf">
+  <h2><span class="icon">⚡</span> 性能与可扩展性问题</h2>
+
+  <div class="issue-card medium">
+    <div class="issue-header">
+      <h4>4.1 单 Worker 模式限制</h4>
+      <span class="badge badge-yellow"> 中</span>
+    </div>
+    <div class="issue-desc">当前推荐 --workers 1 启动，单个慢请求会阻塞其他请求，全局锁在单进程内仍有争用。</div>
+    <div class="issue-fix"><strong>整改</strong>：短期优化协程并发；中期支持多 Worker + 共享图缓存（Redis）；长期微服务拆分。</div>
+  </div>
+
+  <div class="issue-card low">
+    <div class="issue-header">
+      <h4>4.2 Token 记录的内存压力</h4>
+      <span class="badge badge-blue">🟡 低</span>
+    </div>
+    <div class="issue-desc">token_usage.json 最多 10000 条，每次追加需读取整个文件、反序列化、追加、序列化、写回。</div>
+    <div class="issue-fix"><strong>整改</strong>：使用 SQLite 替代 JSON 文件；实现分页和自动归档。</div>
+  </div>
+
+  <div class="issue-card medium">
+    <div class="issue-header">
+      <h4>4.3 Checkpoint 数据库膨胀</h4>
+      <span class="badge badge-yellow">🟡 中</span>
+    </div>
+    <div class="issue-desc">checkpoints.db 存储所有会话的完整对话状态，长期使用后可能膨胀到 GB 级别。</div>
+    <div class="issue-fix"><strong>整改</strong>：实现自动清理策略；提供手动清理工具；考虑将旧 checkpoint 归档到冷存储。</div>
+  </div>
+
+  <div class="issue-card low">
+    <div class="issue-header">
+      <h4>4.4 前端首屏加载性能</h4>
+      <span class="badge badge-blue"> 低</span>
+    </div>
+    <div class="issue-desc">Ant Design 全量引入 + 24 个 i18n 模块同时加载，首屏加载时间可能较长。</div>
+    <div class="issue-fix"><strong>整改</strong>：实现路由级代码分割（React.lazy）；i18n 模块按需加载。</div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="ui">
+  <h2><span class="icon">🎨</span> 前端 UI/UX 问题</h2>
+
+  <div class="issue-card medium">
+    <div class="issue-header">
+      <h4>5.1 未完成功能占位页面</h4>
+      <span class="badge badge-yellow">🟡 中</span>
+    </div>
+    <div class="issue-desc">ACP、Voice、Channels、Backups 四个页面仅显示"功能开发中，敬请期待"。</div>
+    <div class="issue-fix"><strong>整改</strong>：方案 A 从导航菜单移除；方案 B 保留但添加"规划中"标签；方案 C 实现最小可用版本。</div>
+  </div>
+
+  <div class="issue-card medium">
+    <div class="issue-header">
+      <h4>5.2 沙箱后端选项不完整</h4>
+      <span class="badge badge-yellow"> 中</span>
+    </div>
+    <div class="issue-desc">Agent 配置页面的 E2B 和 Daytona 选项显示 "coming soon" 且被禁用。</div>
+    <div class="issue-fix"><strong>整改</strong>：实现 E2B 和 Daytona 后端适配器，或移除这些选项直到实际支持。</div>
+  </div>
+
+  <div class="issue-card low">
+    <div class="issue-header">
+      <h4>5.3 侧边栏信息密度</h4>
+      <span class="badge badge-blue">🟡 低</span>
+    </div>
+    <div class="issue-desc">侧边栏有 5 个分组、20+ 个菜单项，新用户难以找到需要的功能。</div>
+    <div class="issue-fix"><strong>整改</strong>：实现智能菜单（按使用频率排序）；添加搜索功能；支持用户自定义菜单布局。</div>
+  </div>
+
+  <div class="issue-card low">
+    <div class="issue-header">
+      <h4>5.4 移动端适配</h4>
+      <span class="badge badge-blue">🟡 低</span>
+    </div>
+    <div class="issue-desc">当前 Web UI 主要面向桌面端设计，移动端体验不佳。</div>
+    <div class="issue-fix"><strong>整改</strong>：实现响应式布局（至少支持平板端）；聊天页面优先适配移动端。</div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="deps">
+  <h2><span class="icon">📦</span> 第三方依赖风险</h2>
+
+  <div class="issue-card medium">
+    <div class="issue-header">
+      <h4>6.1 deepagents SDK 版本锁定</h4>
+      <span class="badge badge-yellow">🟠 中</span>
+    </div>
+    <div class="issue-desc">deepagents>=0.7.0 是核心依赖，但该项目仍在快速迭代中。版本更新可能带来 API 不兼容变更。</div>
+    <div class="issue-fix"><strong>整改</strong>：锁定具体版本；建立 SDK 升级测试流程；避免依赖 SDK 私有实现。</div>
+  </div>
+
+  <div class="issue-card low">
+    <div class="issue-header">
+      <h4>6.2 OpenSandbox 响应率低</h4>
+      <span class="badge badge-blue">🟡 低</span>
+    </div>
+    <div class="issue-desc">OpenSandbox 项目的 Issue 响应率仅 9%，首次响应中位数 23 小时。</div>
+    <div class="issue-fix"><strong>整改</strong>：保持与 OpenSandbox API 的松耦合；记录所有集成代码方便后续替换。</div>
+  </div>
+
+  <div class="issue-card medium">
+    <div class="issue-header">
+      <h4>6.3 AIO Sandbox 的 seccomp 要求</h4>
+      <span class="badge badge-yellow"> 中</span>
+    </div>
+    <div class="issue-desc">AIO Sandbox 需要 --security-opt seccomp=unconfined，在某些受控环境可能被安全策略禁止。</div>
+    <div class="issue-fix"><strong>整改</strong>：文档明确说明 seccomp 要求；提供最小权限的 seccomp profile。</div>
+  </div>
+
+  <div class="issue-card low">
+    <div class="issue-header">
+      <h4>6.4 LangChain 生态的碎片化</h4>
+      <span class="badge badge-blue">🟡 低</span>
+    </div>
+    <div class="issue-desc">项目依赖多个 LangChain 生态包，版本兼容性可能成为问题。</div>
+    <div class="issue-fix"><strong>整改</strong>：使用 uv lock 锁定所有依赖版本；定期运行兼容性测试。</div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="gap">
+  <h2><span class="icon">📋</span> 未完成功能的差距分析</h2>
+
+  <table>
+    <tr><th>产品愿景</th><th>当前状态</th><th>差距</th></tr>
+    <tr><td>多 Agent 协作</td><td><span class="badge badge-yellow"> 基础可用</span></td><td>SubAgent 仅 3 字段，缺少独立工具/模型/权限配置</td></tr>
+    <tr><td>HITL 审批闭环</td><td><span class="badge badge-yellow">🟡 有 Bug</span></td><td>需修复审批死循环和按钮无响应问题</td></tr>
+    <tr><td>沙箱真执行</td><td><span class="badge badge-yellow">🟡 有 Bug</span></td><td>需修复 manifest 绑定和同步三层问题</td></tr>
+    <tr><td>认证与多租户</td><td><span class="badge badge-blue">⬜ 未实现</span></td><td>企业采用的硬性门槛</td></tr>
+    <tr><td>配置版本化与回滚</td><td><span class="badge badge-yellow">🟡 手动</span></td><td>缺少版本历史、diff、一键回滚</td></tr>
+    <tr><td>流式体验</td><td><span class="badge badge-green">✅ 已实现</span></td><td>基本完成，可优化思考链展示</td></tr>
+    <tr><td>备份恢复</td><td><span class="badge badge-blue">⬜ 仅占位</span></td><td>完全未实现</td></tr>
+    <tr><td>语音转写</td><td><span class="badge badge-blue">⬜ 仅占位</span></td><td>完全未实现</td></tr>
+    <tr><td>频道管理</td><td><span class="badge badge-blue"> 仅占位</span></td><td>完全未实现</td></tr>
+    <tr><td>ACP 协议接入</td><td><span class="badge badge-blue">⬜ 仅占位</span></td><td>完全未实现</td></tr>
+  </table>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="docs">
+  <h2><span class="icon">📝</span> 文档与工程规范问题</h2>
+
+  <div class="issue-card medium">
+    <div class="issue-header">
+      <h4>8.1 现有文档过时</h4>
+      <span class="badge badge-yellow">🟠 中</span>
+    </div>
+    <div class="issue-desc">/docs 下的文档已过时：product.md 标注的实现状态与实际不符；openspec/specs/ 和 openspec/changes/ 目录为空。</div>
+    <div class="issue-fix"><strong>整改</strong>：基于新的产品说明书 + 设计文档更新所有现有文档；填充 openspec 目录。</div>
+  </div>
+
+  <div class="issue-card medium">
+    <div class="issue-header">
+      <h4>8.2 测试覆盖率不足</h4>
+      <span class="badge badge-yellow">🟠 中</span>
+    </div>
+    <div class="issue-desc">缺少并发场景压力测试、沙箱故障恢复测试、大量 Agent 性能测试、前端 E2E 测试。</div>
+    <div class="issue-fix"><strong>整改</strong>：补充并发单元测试和集成测试；引入 Playwright 前端 E2E 测试；建立代码覆盖率目标（80%）。</div>
+  </div>
+
+  <div class="issue-card medium">
+    <div class="issue-header">
+      <h4>8.3 错误处理不一致</h4>
+      <span class="badge badge-yellow">🟡 中</span>
+    </div>
+    <div class="issue-desc">部分错误被 except Exception 静默吞掉，导致问题在下游才暴露。</div>
+    <div class="issue-fix"><strong>整改</strong>：审查所有 except Exception 块；使用具体的异常类型；建立错误分级。</div>
+  </div>
+
+  <div class="issue-card low">
+    <div class="issue-header">
+      <h4>8.4 缺少 API 版本化</h4>
+      <span class="badge badge-blue">🟡 低</span>
+    </div>
+    <div class="issue-desc">当前所有 API 路径为 /api/...，没有版本号。未来 API 不兼容变更时无法做渐进式迁移。</div>
+    <div class="issue-fix"><strong>整改</strong>：在下一个大版本中引入 /api/v1/ 前缀；保留旧路径作为兼容层。</div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="roadmap">
+  <h2><span class="icon">🗺️</span> 整改优先级与路线图建议</h2>
+
+  <div class="phase-timeline">
+    <div class="phase-step active">
+      <div class="phase-num">P0</div>
+      <div class="phase-name">紧急修复</div>
+      <div class="phase-time">1-2 周</div>
+    </div>
+    <div class="phase-step">
+      <div class="phase-num">P1</div>
+      <div class="phase-name">核心加固</div>
+      <div class="phase-time">2-4 周</div>
+    </div>
+    <div class="phase-step">
+      <div class="phase-num">P2</div>
+      <div class="phase-name">架构优化</div>
+      <div class="phase-time">1-2 月</div>
+    </div>
+    <div class="phase-step">
+      <div class="phase-num">P3</div>
+      <div class="phase-name">功能补全</div>
+      <div class="phase-time">2-3 月</div>
+    </div>
+    <div class="phase-step">
+      <div class="phase-num">P4</div>
+      <div class="phase-name">企业级能力</div>
+      <div class="phase-time">3-6 月</div>
+    </div>
+  </div>
+
+  <div class="phase-card">
+    <h4> Phase 0：紧急修复（1-2 周）</h4>
+    <table>
+      <tr><th>#</th><th>问题</th><th>影响</th><th>工作量</th></tr>
+      <tr><td>0.1</td><td>修复 HITL 审批死循环（1.1）</td><td>核心功能不可用</td><td>2-3 天</td></tr>
+      <tr><td>0.2</td><td>修复审批按钮无响应（1.3）</td><td>核心功能不可用</td><td>1 天</td></tr>
+      <tr><td>0.3</td><td>修复 SubAgent 白名单 Bug（1.2）</td><td>委派列表错误</td><td>1-2 天</td></tr>
+      <tr><td>0.4</td><td>修复 Token 统计缺失（1.6）</td><td>数据不完整</td><td>1 天</td></tr>
+    </table>
+  </div>
+
+  <div class="phase-card">
+    <h4>🟠 Phase 1：核心加固（2-4 周）</h4>
+    <table>
+      <tr><th>#</th><th>问题</th><th>影响</th><th>工作量</th></tr>
+      <tr><td>1.1</td><td>SubAgent 全字段支持</td><td>协作灵活性</td><td>1-2 周</td></tr>
+      <tr><td>1.2</td><td>沙箱同步 Bug 修复</td><td>沙箱可靠性</td><td>1 周</td></tr>
+      <tr><td>1.3</td><td>SDK repr 泄漏修复</td><td>UI 体验</td><td>1 天</td></tr>
+      <tr><td>1.4</td><td>错误处理规范化</td><td>可维护性</td><td>1 周</td></tr>
+    </table>
+  </div>
+
+  <div class="phase-card">
+    <h4>🟡 Phase 2：架构优化（1-2 月）</h4>
+    <table>
+      <tr><th>#</th><th>问题</th><th>影响</th><th>工作量</th></tr>
+      <tr><td>2.1</td><td>全局锁拆分</td><td>并发性能</td><td>2-3 周</td></tr>
+      <tr><td>2.2</td><td>图缓存失效粒度优化</td><td>首响应时间</td><td>1 周</td></tr>
+      <tr><td>2.3</td><td>认证机制引入</td><td>企业采用</td><td>2-3 周</td></tr>
+      <tr><td>2.4</td><td>Checkpoint 清理策略</td><td>磁盘空间</td><td>1 周</td></tr>
+    </table>
+  </div>
+
+  <div class="phase-card">
+    <h4>🟢 Phase 3：功能补全（2-3 月）</h4>
+    <table>
+      <tr><th>#</th><th>问题</th><th>影响</th><th>工作量</th></tr>
+      <tr><td>3.1</td><td>备份恢复功能实现</td><td>数据安全</td><td>2-3 周</td></tr>
+      <tr><td>3.2</td><td>配置版本化与回滚</td><td>治理能力</td><td>2 周</td></tr>
+      <tr><td>3.3</td><td>描述智能生成</td><td>委派命中率</td><td>2 周</td></tr>
+      <tr><td>3.4</td><td>E2B/Daytona 后端支持</td><td>沙箱多样性</td><td>2-3 周</td></tr>
+    </table>
+  </div>
+
+  <div class="phase-card">
+    <h4>🔵 Phase 4：企业级能力（3-6 月）</h4>
+    <table>
+      <tr><th>#</th><th>问题</th><th>影响</th><th>工作量</th></tr>
+      <tr><td>4.1</td><td>RBAC 多角色支持</td><td>企业安全</td><td>3-4 周</td></tr>
+      <tr><td>4.2</td><td>API 版本化</td><td>长期维护</td><td>1-2 周</td></tr>
+      <tr><td>4.3</td><td>移动端适配</td><td>用户体验</td><td>4-6 周</td></tr>
+      <tr><td>4.4</td><td>异步 Agent 执行</td><td>长任务支持</td><td>4-6 周</td></tr>
+    </table>
+  </div>
+</section>
+
+<div style="text-align: center; padding: 40px 0; color: var(--text-secondary); font-size: 13px; border-top: 1px solid var(--border); margin-top: 40px;">
+  <p>AgentCore 问题清单与整改建议 v1.0 &nbsp;·&nbsp; 2026-08-31</p>
+</div>
+
+</main>
+</div>
+<script>
+const sections = document.querySelectorAll('.section');
+const links = document.querySelectorAll('.sidebar a');
+function updateActiveLink() {
+  let current = '';
+  sections.forEach(section => { if (window.scrollY >= section.offsetTop - 80) current = section.getAttribute('id'); });
+  links.forEach(link => { link.classList.remove('active'); if (link.getAttribute('href') === '#' + current) link.classList.add('active'); });
+}
+window.addEventListener('scroll', updateActiveLink);
+window.addEventListener('load', updateActiveLink);
+links.forEach(link => { link.addEventListener('click', function(e) { e.preventDefault(); const target = document.querySelector(this.getAttribute('href')); if (target) target.scrollIntoView({ behavior: 'smooth' }); }); });
+</script>
+</body>
+</html>

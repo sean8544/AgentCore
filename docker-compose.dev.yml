@@ -1,0 +1,88 @@
+# =============================================================================
+# AgentCore — Docker Compose (Development Mode)
+#
+# 支持前后端代码热重载的开发环境配置。
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up -d          # 启动开发环境
+#   docker compose -f docker-compose.dev.yml up -d postgres  # 启动 PostgreSQL
+#   docker compose -f docker-compose.dev.yml logs -f         # 查看日志
+#   docker compose -f docker-compose.dev.yml down           # 停止
+#
+# 特性：
+#   - 后端代码修改即时生效（uvicorn --reload）
+#   - 前端需要本地运行 dev server 或重新构建
+#   - 数据持久化到本地 .agentcore 目录
+# =============================================================================
+
+services:
+  agentcore-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      args:
+        AGENTCORE_BASE_PATH: ${AGENTCORE_BASE_PATH:-}
+    container_name: agentcore-dev
+    ports:
+      - "8000:8000"
+      # 前端 dev server 端口（可选，如果本地运行前端）
+      # - "5173:5173"
+    volumes:
+      # 挂载后端代码（支持热重载）
+      - ./src:/app/src
+      # 挂载前端代码（需要重新构建或本地运行 dev server）
+      - ./console:/app/console
+      # 持久化数据
+      - ./.agentcore:/app/.agentcore
+      # 挂载日志目录
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - AGENTCORE_DATA_DIR=/app/.agentcore
+      - AGENTCORE_BASE_PATH=${AGENTCORE_BASE_PATH:-}
+      - AGENTCORE_CHECKPOINTER_BACKEND=${AGENTCORE_CHECKPOINTER_BACKEND:-sqlite}
+      - AGENTCORE_POSTGRES_HOST=${AGENTCORE_POSTGRES_HOST:-postgres}
+      - AGENTCORE_POSTGRES_PORT=${AGENTCORE_POSTGRES_PORT:-5432}
+      - AGENTCORE_POSTGRES_DB=${AGENTCORE_POSTGRES_DB:-agentcore}
+      - AGENTCORE_POSTGRES_USER=${AGENTCORE_POSTGRES_USER:-agentcore}
+      - AGENTCORE_POSTGRES_PASSWORD=${AGENTCORE_POSTGRES_PASSWORD:-agentcore_secret}
+      # 开发模式标志
+      - AGENTCORE_DEV_MODE=true
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+    # 不使用 restart，方便开发时手动控制
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # PostgreSQL 服务（可选）
+  postgres:
+    image: postgres:16-alpine
+    container_name: agentcore-postgres-dev
+    environment:
+      POSTGRES_DB: ${AGENTCORE_POSTGRES_DB:-agentcore}
+      POSTGRES_USER: ${AGENTCORE_POSTGRES_USER:-agentcore}
+      POSTGRES_PASSWORD: ${AGENTCORE_POSTGRES_PASSWORD:-agentcore_secret}
+    ports:
+      - "${AGENTCORE_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - agentcore-pgdata-dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AGENTCORE_POSTGRES_USER:-agentcore}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  agentcore-pgdata-dev:
+    driver: local

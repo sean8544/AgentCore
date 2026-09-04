@@ -146,6 +146,8 @@ DEFAULT_BOOTSTRAP_MD = """# 欢迎使用 AgentCore！
 
 - `/memory/USER.md` — 用户的偏好配置
 
+> 提示：`/memory/MEMORY.md` 与 `/memory/sessions/` 目录存放长期记忆与历史会话归档。缺少上下文时，可先用 grep 或 read_file 在其中检索历史信息。
+
 ## 第三步：告知模型配置方式
 
 告诉用户：可以在「模型」页面或 Chat 页的 Agent 选择器中，为我配置或切换 AI 模型。
@@ -155,6 +157,31 @@ DEFAULT_BOOTSTRAP_MD = """# 欢迎使用 AgentCore！
 以上步骤全部完成后，**必须调用 delete 工具删除 `/bootstrap.md`**。删除后即代表初始化结束，之后不要再提及引导流程，直接开始正常工作。
 
 > 如果用户希望跳过某一步，尊重用户的选择并继续下一步；即使用户全部跳过，最后也要删除本文件。
+"""
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat checklist (HEARTBEAT.md)
+#
+# Seeded once on first workspace creation.  The scheduled heartbeat
+# (runtime/heartbeat.py) feeds this file's content to the agent as a
+# periodic query.  A missing or empty file is the natural safety valve:
+# the heartbeat run is skipped silently.  Once the user (or agent)
+# deletes it, the ``.heartbeat_seeded`` marker ensures it is never
+# re-created — same pattern as bootstrap.md.
+# ---------------------------------------------------------------------------
+
+HEARTBEAT_MD_NAME = "HEARTBEAT.md"
+HEARTBEAT_SEEDED_FLAG_NAME = ".heartbeat_seeded"
+
+DEFAULT_HEARTBEAT_MD = """# Heartbeat checklist
+
+这是一次定时心跳巡检。请按以下清单快速检查，若一切正常只需简短汇报：
+
+- 检查 memory/ 目录中是否有需要跟进的事项
+- 检查待办事项是否卡住
+- 若距上次交互已超过 8 小时，可以做一次轻量 check-in
+- 没有需要汇报的内容时，直接回复 HEARTBEAT_OK 即可
 """
 
 
@@ -200,6 +227,9 @@ DEFAULT_AGENT_JSON: dict[str, Any] = {
     },
     "tools": {
         "enabled": [],
+        "disabled": [],
+    },
+    "skills": {
         "disabled": [],
     },
     "settings": {},
@@ -752,6 +782,7 @@ class Workspace:
         # mechanism.  bootstrap.md is seeded at most once per workspace.
         self._ensure_default_kernel_files()
         self._ensure_bootstrap_file()
+        self._ensure_heartbeat_file()
         self._kernel_files: dict[str, str] = self._load_kernel_files()
 
         # Agent configuration (agent.json) — seed the default config on
@@ -886,6 +917,33 @@ class Workspace:
                 "Workspace[%s]: failed to create %s: %s",
                 self.workspace_id,
                 BOOTSTRAP_MD_NAME,
+                exc,
+            )
+
+    def _ensure_heartbeat_file(self) -> None:
+        """Seed ``HEARTBEAT.md`` exactly once per workspace.
+
+        Same one-shot semantics as ``bootstrap.md``: the marker file
+        records that seeding already happened, so a user-deleted
+        checklist stays deleted (and the scheduled heartbeat silently
+        skips runs while the file is absent).
+        """
+        heartbeat_path = self.workspace_dir / HEARTBEAT_MD_NAME
+        flag_path = self.workspace_dir / HEARTBEAT_SEEDED_FLAG_NAME
+        if heartbeat_path.exists() or flag_path.exists():
+            return
+        try:
+            heartbeat_path.write_text(DEFAULT_HEARTBEAT_MD, encoding="utf-8")
+            flag_path.touch()
+            logger.info(
+                "Workspace[%s]: created HEARTBEAT.md (heartbeat checklist)",
+                self.workspace_id,
+            )
+        except OSError as exc:
+            logger.warning(
+                "Workspace[%s]: failed to create %s: %s",
+                self.workspace_id,
+                HEARTBEAT_MD_NAME,
                 exc,
             )
 
@@ -1094,8 +1152,8 @@ class Workspace:
             return {**DEFAULT_AGENT_JSON}
         config: dict[str, Any] = dict(DEFAULT_AGENT_JSON)
         config.update(raw)
-        # Merge nested dicts one level deep (model / tools / settings).
-        for key in ("model", "tools", "settings"):
+        # Merge nested dicts one level deep (model / tools / skills / settings).
+        for key in ("model", "tools", "skills", "settings"):
             merged = dict(DEFAULT_AGENT_JSON.get(key, {}))
             value = raw.get(key)
             if isinstance(value, dict):

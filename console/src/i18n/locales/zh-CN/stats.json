@@ -1,7 +1,7 @@
 {
   "title": "智能体统计",
   "totalAgents": "Agent 总数",
-  "runningLoaded": "运行中 / 已加载",
+  "runningLoaded": "已加载",
   "totalSessions": "会话总数",
   "totalMessages": "消息总数",
   "agentDetail": "Agent 明细",
@@ -11,9 +11,6 @@
   "sessionCount": "会话数",
   "messageCount": "消息数",
   "skillCount": "技能数",
-  "running": "运行中",
-  "idle": "空闲",
-  "started": "已启动",
-  "stopped": "已停止",
-  "error": "错误"
+  "busy": "忙碌",
+  "idle": "空闲"
 }

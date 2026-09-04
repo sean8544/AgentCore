@@ -20,15 +20,32 @@ from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Literal
 
 import aiosqlite
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import HumanMessage
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
+# PostgreSQL checkpointer (lazy import to avoid hard dependency)
+try:
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+except ImportError:
+    AsyncPostgresSaver = None  # type: ignore[misc,assignment]
+
 from agentcore.runtime import paths
-from agentcore.runtime.workspace import BOOTSTRAP_MD_NAME
+from agentcore.runtime.agent_ids import known_agent_ids
+from agentcore.runtime.agent_runtime import mark_turn_begin, mark_turn_end
+from agentcore.runtime.approval_cleanup import has_expired_approval
+from agentcore.runtime.sse_heartbeat import keepalive_sse
+from agentcore.runtime.workspace import (
+    ALL_KERNEL_FILE_NAMES,
+    BOOTSTRAP_MD_NAME,
+    MEMORY_DIR_NAME,
+    SKILLS_DIR_NAME,
+)
 
 # Backwards-compatible key used by LangGraph v1 ainvoke() to surface
 # interrupts in the result dict.  Value: list[Interrupt].
@@ -53,7 +70,7 @@ logger = logging.getLogger(__name__)
 class ChatState:
     """Mutable chat runtime state owned by a single FastAPI application."""
 
-    checkpointer: AsyncSqliteSaver | None = None
+    checkpointer: AsyncSqliteSaver | "AsyncPostgresSaver" | None = None
     # Compiled agent graphs keyed by agent_id — rebuilt on invalidation.
     graph_cache: dict[str, Any] = field(default_factory=dict)
     # LangGraph thread_ids (= session_ids) used per agent so graph
@@ -80,32 +97,57 @@ def get_chat_state(state: Any) -> ChatState:
     return chat_state
 
 
-def get_checkpointer(chat_state: ChatState) -> AsyncSqliteSaver:
-    """Return the application-scoped :class:`AsyncSqliteSaver`.
+async def get_checkpointer(chat_state: ChatState) -> AsyncSqliteSaver | "AsyncPostgresSaver":
+    """Return the application-scoped LangGraph checkpointer.
 
-    The saver keeps a long-lived connection to
-    :func:`agentcore.runtime.paths.get_checkpoints_path` so that
-    conversation state persists across requests (and server restarts)
-    keyed by LangGraph ``thread_id`` — which we map 1:1 to the chat
-    ``session_id``.
+    根据 ``AGENTCORE_CHECKPOINTER_BACKEND`` 环境变量选择后端：
 
-    Note: :meth:`AsyncSqliteSaver.from_conn_string` is an async context
-    manager, so we build the saver directly from a connection instead, which
-    is equivalent for an application-lifetime object.
+    - ``sqlite`` (默认): 使用 :class:`AsyncSqliteSaver`
+    - ``postgresql``: 使用 :class:`AsyncPostgresSaver`
+
+    两种实现都遵循 LangGraph 标准 checkpointer 接口，
+    deep agents SDK 无需任何修改。
     """
-    if chat_state.checkpointer is None:
+    if chat_state.checkpointer is not None:
+        return chat_state.checkpointer
+
+    if paths.is_postgres_enabled():
+        # === PostgreSQL 模式 ===
+        if AsyncPostgresSaver is None:
+            raise ImportError(
+                "PostgreSQL checkpointer requires 'langgraph-checkpoint-postgres' package. "
+                "Install with: pip install langgraph-checkpoint-postgres"
+            )
+        import asyncpg
+
+        conn_string = paths.get_postgres_connection_string()
+        conn = await asyncpg.connect(conn_string)
+        chat_state.checkpointer = AsyncPostgresSaver(conn)
+
+        # 首次启动时创建表（幂等操作）
+        await chat_state.checkpointer.setup()
+
+        logger.info(
+            "LangGraph checkpointer initialised (PostgreSQL): %s:%s/%s",
+            paths.get_postgres_host(),
+            paths.get_postgres_port(),
+            paths.get_postgres_db(),
+        )
+    else:
+        # === SQLite 模式（默认）===
         checkpoint_db = paths.get_checkpoints_path()
         checkpoint_db.parent.mkdir(parents=True, exist_ok=True)
         conn = aiosqlite.connect(str(checkpoint_db))
         chat_state.checkpointer = AsyncSqliteSaver(conn)
-        logger.info("LangGraph checkpointer initialised at %s", checkpoint_db)
+        logger.info("LangGraph checkpointer initialised (SQLite): %s", checkpoint_db)
+
     return chat_state.checkpointer
 
 
 async def close_checkpointer(chat_state: ChatState) -> None:
-    """Close the checkpointer's SQLite connection (called on app shutdown).
+    """Close the checkpointer connection (called on app shutdown).
 
-    Without this the background ``aiosqlite`` connection thread keeps the
+    Without this the background connection thread keeps the
     interpreter alive at exit.
     """
     if chat_state.checkpointer is not None:
@@ -146,7 +188,7 @@ def _get_store(request: Request):
 
 
 async def invalidate_agent_graph(
-    state: Any, agent_id: str | None = None
+    state: Any, agent_id: str | None = None, *, purge_checkpoints: bool = True
 ) -> None:
     """Drop cached agent graphs so they are rebuilt with fresh config.
 
@@ -156,12 +198,17 @@ async def invalidate_agent_graph(
     Called after workspace reload / kernel-file edits so the next chat
     recreates the agent with the new configuration.
 
-    In addition the checkpoint state of every tracked session belonging to
-    the invalidated agent(s) is deleted — the SDK's ``MemoryMiddleware`` /
-    ``SkillsMiddleware`` skip loading when ``memory_contents`` /
-    ``skills_metadata`` already exist in checkpointed state, so without
-    this purge kernel-file or skill changes would never reach existing
-    conversations.
+    With ``purge_checkpoints=True`` (the default for config-change
+    paths) the checkpoint state of every tracked session belonging to
+    the invalidated agent(s) is deleted as well — the SDK's
+    ``MemoryMiddleware`` / ``SkillsMiddleware`` skip loading when
+    ``memory_contents`` / ``skills_metadata`` already exist in
+    checkpointed state, so without this purge kernel-file or skill
+    changes would never reach existing conversations.
+
+    ``purge_checkpoints=False`` is used by the unload/stop path, which
+    releases memory without altering configuration — deleting session
+    checkpoints there would silently lose conversation state.
     """
     chat_state = get_chat_state(state)
     if agent_id is None:
@@ -174,11 +221,11 @@ async def invalidate_agent_graph(
             logger.info("Agent graph cache invalidated for %s", agent_id)
 
     # Purge checkpoint state of the affected sessions so memory/skills are
-    # re-read from disk on the next invoke.
+    # re-read from disk on the next invoke (config-change paths only).
     thread_ids: set[str] = set()
     for aid in targets:
         thread_ids |= chat_state.threads.pop(aid, set())
-    if thread_ids and chat_state.checkpointer is not None:
+    if purge_checkpoints and thread_ids and chat_state.checkpointer is not None:
         for thread_id in thread_ids:
             try:
                 await chat_state.checkpointer.adelete_thread(thread_id)
@@ -190,16 +237,348 @@ async def invalidate_agent_graph(
 
 
 # ---------------------------------------------------------------------------
+# Sandbox workspace sync — upload local workspace files to sandbox container
+# ---------------------------------------------------------------------------
+
+
+async def _sandbox_write_content(
+    backend: Any,
+    path: str,
+    content: str | bytes,
+) -> None:
+    """Write content to a sandbox path, deleting any existing file first.
+
+    The ``OpenSandboxBackend.upload_files()`` (inherited from
+    ``BaseSandbox``) rejects files that already exist, so we must
+    ``rm -f`` before each write to support re-syncing to the same
+    sandbox container.
+    """
+    import shlex
+    await backend.aexecute(f"rm -f {shlex.quote(path)}")
+    if isinstance(content, bytes):
+        await backend.aupload_files([(path, content)])
+    else:
+        await backend.awrite(path, content)
+
+
+async def _legacy_sync_workspace_to_sandbox(
+    workspace: Any,
+    sandbox_backend: Any,
+) -> None:
+    """Upload workspace skills, memory, and kernel files to the sandbox.
+
+    When the agent uses a sandbox backend, the SDK's SkillsMiddleware and
+    MemoryMiddleware read files through the backend (i.e. inside the
+    sandbox container).  But the files live on the local workspace
+    filesystem — the sandbox container starts with an empty filesystem.
+    This function bridges the gap by uploading the relevant files before
+    agent creation so the SDK can discover them.
+    """
+    workspace_dir = workspace.workspace_dir
+    uploaded = 0
+
+    # --- Skills ---
+    skills_dir = workspace_dir / SKILLS_DIR_NAME
+    if skills_dir.exists() and skills_dir.is_dir():
+        for skill_dir in skills_dir.iterdir():
+            if not skill_dir.is_dir():
+                continue
+            skill_md = skill_dir / "SKILL.md"
+            if not skill_md.exists():
+                continue
+            # Upload SKILL.md
+            try:
+                content = skill_md.read_text(encoding="utf-8")
+                sandbox_path = f"/{SKILLS_DIR_NAME}/{skill_dir.name}/SKILL.md"
+                await _sandbox_write_content(sandbox_backend, sandbox_path, content)
+                uploaded += 1
+            except Exception:
+                logger.exception(
+                    "Failed to upload skill %s to sandbox", skill_dir.name,
+                )
+            # Upload all other files in skill directory (recursively)
+            for item in skill_dir.rglob("*"):
+                if not item.is_file():
+                    continue
+                if item.name == "SKILL.md":
+                    continue  # Already uploaded
+                if item.name == ".DS_Store":
+                    continue  # Skip macOS metadata
+                try:
+                    rel = item.relative_to(skill_dir)
+                    content = item.read_bytes()
+                    sandbox_path = f"/{SKILLS_DIR_NAME}/{skill_dir.name}/{rel.as_posix()}"
+                    await _sandbox_write_content(sandbox_backend, sandbox_path, content)
+                    uploaded += 1
+                except Exception:
+                    logger.exception(
+                        "Failed to upload skill file %s to sandbox", item.name,
+                    )
+
+    # --- Memory files ---
+    memory_dir = workspace_dir / MEMORY_DIR_NAME
+    if memory_dir.exists() and memory_dir.is_dir():
+        for mem_file in ["MEMORY.md", "USER.md"]:
+            mem_path = memory_dir / mem_file
+            if mem_path.exists():
+                try:
+                    content = mem_path.read_text(encoding="utf-8")
+                    sandbox_path = f"/{MEMORY_DIR_NAME}/{mem_file}"
+                    await _sandbox_write_content(sandbox_backend, sandbox_path, content)
+                    uploaded += 1
+                except Exception:
+                    logger.exception(
+                        "Failed to upload memory %s to sandbox", mem_file,
+                    )
+
+    # --- Kernel files (bootstrap.md, agent.md, etc.) ---
+    for name in ALL_KERNEL_FILE_NAMES:
+        kernel_path = workspace_dir / name
+        if kernel_path.exists():
+            try:
+                content = kernel_path.read_text(encoding="utf-8")
+                await _sandbox_write_content(sandbox_backend, f"/{name}", content)
+                uploaded += 1
+            except Exception:
+                logger.exception(
+                    "Failed to upload kernel file %s to sandbox", name,
+                )
+
+    # --- Data files (Excel, CSV, etc. in workspace root) ---
+    _DATA_EXTENSIONS = {".xlsx", ".xls", ".csv", ".json", ".txt", ".md"}
+    for item in workspace_dir.iterdir():
+        if not item.is_file():
+            continue
+        if item.suffix.lower() not in _DATA_EXTENSIONS:
+            continue
+        # Skip kernel files (already synced above)
+        if item.name in ALL_KERNEL_FILE_NAMES:
+            continue
+        try:
+            content = item.read_bytes()
+            await _sandbox_write_content(sandbox_backend, f"/{item.name}", content)
+            uploaded += 1
+        except Exception:
+            logger.exception(
+                "Failed to upload data file %s to sandbox", item.name,
+            )
+
+    if uploaded:
+        logger.info(
+            "Synced %d workspace file(s) to sandbox %s",
+            uploaded,
+            getattr(sandbox_backend, "id", "?"),
+        )
+
+
+async def _sync_workspace_to_sandbox(workspace: Any, sandbox_backend: Any) -> None:
+    """Mirror the workspace into the container before the turn starts.
+
+    When file sync is enabled (default for sandbox agents) the whole
+    workspace is pushed via :class:`SandboxSyncEngine` — skills, memory,
+    kernel files and user data alike — after waiting for the freshly
+    created container's AIO server to answer (it 502s while booting).
+    Agents that opted out (``file_sync.enabled = false``) fall back to
+    the legacy per-file upload of skills/memory/kernel to the container
+    root.
+    """
+    from agentcore.sandbox.sync_engine import SandboxSyncEngine, wait_backend_ready
+
+    try:
+        agent_config = workspace.read_agent_config()
+    except Exception:
+        agent_config = {}
+    engine = SandboxSyncEngine.from_agent_config(
+        workspace.workspace_dir, agent_config
+    )
+    if engine is None:
+        await _legacy_sync_workspace_to_sandbox(workspace, sandbox_backend)
+        return
+    # Bind the current container id to the sync engine.  When the container
+    # has been recreated (system restart, sandbox death, manual destroy) the
+    # manifest is reset so push() re-uploads every file instead of skipping
+    # them all as "unchanged" against a stale manifest.
+    container_id = getattr(sandbox_backend, "id", None)
+    if container_id:
+        engine.note_container_id(str(container_id))
+    # A freshly created container needs a moment before its AIO server
+    # answers; waiting here avoids 502s on the very first chat (which
+    # previously dropped every skill/memory upload silently).
+    if not await wait_backend_ready(sandbox_backend, timeout=60):
+        logger.warning("Sandbox not ready after 60s — skipping workspace push")
+        return
+    report = await engine.push(sandbox_backend)
+    if report["pushed"]:
+        logger.info(
+            "Pushed %d workspace file(s) to sandbox %s",
+            len(report["pushed"]),
+            getattr(sandbox_backend, "id", "?"),
+        )
+
+
+# Detached pull tasks — kept referenced so the event loop does not GC them.
+_PULL_TASKS: set[asyncio.Task] = set()
+
+
+async def _pull_sandbox_storage(
+    app_state: Any, agent_id: str, workspace: Any = None
+) -> None:
+    """Best-effort pull of the sandbox home back into the workspace.
+
+    Runs after a chat turn finishes so files the agent created inside the
+    container land in the workspace without a manual sync.  Failures are
+    logged and never surfaced — a dead container must not break the UI.
+    """
+    from agentcore.sandbox.sync_engine import SandboxSyncEngine
+
+    try:
+        if app_state is None:
+            return
+        mgr = getattr(app_state, "sandbox_session_manager", None)
+        if mgr is None:
+            return
+        session = mgr.get_session(agent_id)
+        if session is None or session.status != "running":
+            return
+        if workspace is None:
+            agent_manager = getattr(app_state, "agent_manager", None)
+            if agent_manager is None:
+                return
+            workspace = agent_manager.get_workspace(agent_id)
+            if workspace is None:
+                return
+        try:
+            agent_config = workspace.read_agent_config()
+        except Exception:
+            agent_config = {}
+        engine = SandboxSyncEngine.from_agent_config(
+            workspace.workspace_dir, agent_config
+        )
+        if engine is None:
+            return
+        container_id = getattr(session.backend, "id", None) or session.sandbox_id
+        engine.note_container_id(str(container_id))
+        report = await engine.pull(session.backend)
+        if report["pulled"] or report["conflicts"]:
+            logger.info(
+                "Pulled %d file(s) from sandbox %s (%d conflict(s))",
+                len(report["pulled"]),
+                session.sandbox_id,
+                len(report["conflicts"]),
+            )
+    except Exception:
+        logger.exception(
+            "Failed to pull sandbox storage for agent %s", agent_id
+        )
+
+
+def _schedule_pull(app_state: Any, agent_id: str, workspace: Any) -> None:
+    """Fire the post-turn sandbox pull as a detached background task.
+
+    Detaching keeps the SSE ``done`` event snappy and ensures a client
+    disconnect (generator close) never cancels the transfer.
+    """
+    try:
+        task = asyncio.get_running_loop().create_task(
+            _pull_sandbox_storage(app_state, agent_id, workspace)
+        )
+        _PULL_TASKS.add(task)
+        task.add_done_callback(_PULL_TASKS.discard)
+    except RuntimeError:
+        pass  # No running loop (shouldn't happen inside the generators).
+
+
+# ---------------------------------------------------------------------------
 # Agent graph resolution
 # ---------------------------------------------------------------------------
 
 
-def _resolve_agent_graph(
+async def _ensure_agent_graph(
+    req: Request,
+    agent_id: str,
+    chat_state: ChatState,
+) -> Any:
+    """Return a cached graph for *agent_id*, rebuilding it if necessary.
+
+    After a server restart the in-memory ``graph_cache`` is empty.  The
+    main ``stream_chat`` endpoint already handles this because it always
+    goes through :func:`_resolve_agent_graph` (which rebuilds on cache
+    miss).  The approval endpoints, however, used to read directly from
+    ``graph_cache`` and raise a 404 on miss — leaving the user stuck
+    after a restart.  This helper gives them the same auto-rebuild
+    behaviour.
+    """
+    # Fast path: cache hit.
+    if agent_id in chat_state.graph_cache:
+        return chat_state.graph_cache[agent_id]
+
+    # Zombie-resurrection guard: never lazy-load a workspace to rebuild
+    # a graph for an agent that no longer has a persisted record.  Without
+    # this, a stale browser tab calling an approval endpoint would
+    # silently recreate ``.agentcore/workspace/agent/{id}/`` from scratch
+    # and undo the earlier delete.
+    if agent_id not in known_agent_ids(req.app.state):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Agent {agent_id!r} not found",
+        )
+
+    # Slow path: rebuild.
+    manager = getattr(req.app.state, "agent_manager", None)
+    workspace = None
+    if manager is not None:
+        try:
+            workspace = await manager.get_or_create_workspace(agent_id)
+        except Exception:
+            logger.exception("Failed to load workspace for agent %s", agent_id)
+
+    # Sandbox backend (if applicable)
+    sandbox_backend = None
+    sandbox_mgr = getattr(req.app.state, "sandbox_session_manager", None)
+    agent_config: dict = {}
+    if workspace is not None:
+        try:
+            agent_config = workspace.read_agent_config()
+        except Exception:
+            logger.exception("Failed to read agent config for %s", agent_id)
+    if sandbox_mgr is not None and workspace is not None:
+        try:
+            backend_cfg = (agent_config.get("settings") or {}).get("backend", {})
+            if backend_cfg.get("type") == "sandbox":
+                session = await sandbox_mgr.get_or_create(agent_id, backend_cfg)
+                if session is not None:
+                    sandbox_backend = session.backend
+                    # Sync workspace files to sandbox container
+                    try:
+                        await _sync_workspace_to_sandbox(workspace, sandbox_backend)
+                    except Exception:
+                        logger.exception(
+                            "Failed to sync workspace to sandbox for agent %s",
+                            agent_id,
+                        )
+        except Exception:
+            logger.exception(
+                "Failed to get/create sandbox session for agent %s", agent_id,
+            )
+
+    factory = getattr(req.app.state, "factory", None)
+    return await _resolve_agent_graph(
+        agent_id,
+        workspace,
+        factory=factory,
+        manager=manager,
+        chat_state=chat_state,
+        sandbox_backend=sandbox_backend,
+    )
+
+
+async def _resolve_agent_graph(
     agent_id: str,
     workspace: Any,
     factory: Any = None,
     manager: Any = None,
     chat_state: ChatState | None = None,
+    sandbox_backend: Any = None,
 ) -> Any:
     """Resolve *agent_id* to a compiled agent graph.
 
@@ -223,7 +602,33 @@ def _resolve_agent_graph(
     if chat_state is None:
         chat_state = _default_chat_state
     if agent_id in chat_state.graph_cache:
-        return chat_state.graph_cache[agent_id]
+        # If a sandbox_backend is provided, verify the cached graph was built
+        # with the same backend.  The backend adapter is bound to a specific
+        # sandbox container, so a stale graph would execute commands in a dead
+        # container.  Compare by sandbox_id when available.
+        if sandbox_backend is not None:
+            cached_graph = chat_state.graph_cache[agent_id]
+            cached_backend = getattr(cached_graph, "_sandbox_backend", None)
+            new_sid = getattr(sandbox_backend, "sandbox_id", None) or getattr(sandbox_backend, "id", None)
+            old_sid = (getattr(cached_backend, "sandbox_id", None) or getattr(cached_backend, "id", None)) if cached_backend else None
+            if new_sid and old_sid and new_sid != old_sid:
+                logger.info(
+                    "Sandbox backend changed for agent %s (%s → %s) — rebuilding graph",
+                    agent_id, old_sid, new_sid,
+                )
+                chat_state.graph_cache.pop(agent_id, None)
+            elif new_sid and not old_sid:
+                # Cached graph has no backend reference (built before fix)
+                # or is for a non-sandbox agent — force rebuild
+                logger.info(
+                    "Cached graph for agent %s has no sandbox backend ref (new=%s) — rebuilding",
+                    agent_id, new_sid,
+                )
+                chat_state.graph_cache.pop(agent_id, None)
+            else:
+                return cached_graph
+        else:
+            return chat_state.graph_cache[agent_id]
 
     if workspace is None:
         raise HTTPException(
@@ -288,8 +693,9 @@ def _resolve_agent_graph(
             agent_config,
             workspace_dir=workspace_dir,
             workspace=workspace,
-            checkpointer=get_checkpointer(chat_state),
+            checkpointer=await get_checkpointer(chat_state),
             subagents=subagents,
+            sandbox_backend=sandbox_backend,
         )
     except Exception as exc:
         logger.exception("Failed to create agent %s", agent_id)
@@ -297,6 +703,11 @@ def _resolve_agent_graph(
             status_code=500,
             detail=f"Failed to create agent {agent_id!r}: {exc}",
         ) from exc
+
+    # Store the sandbox_backend on the graph so cache validation can
+    # detect when the sandbox container has changed.
+    if sandbox_backend is not None:
+        agent_graph._sandbox_backend = sandbox_backend
 
     chat_state.graph_cache[agent_id] = agent_graph
     return agent_graph
@@ -307,12 +718,21 @@ def _resolve_agent_graph(
 # ---------------------------------------------------------------------------
 
 
+class Attachment(BaseModel):
+    """Reference to a file uploaded via ``POST /api/chat/upload``."""
+
+    name: str  # original (sanitised) file name
+    path: str  # workspace-relative path, e.g. ``uploads/ab12cd_report.pdf``
+    size: int = 0
+
+
 class ChatRequest(BaseModel):
     """Incoming chat message."""
 
     agent_id: str
     message: str
     session_id: str | None = None  # auto-created when omitted
+    attachments: list[Attachment] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):
@@ -344,6 +764,15 @@ class SessionInfo(BaseModel):
     created_at: str
     updated_at: str
     message_count: int
+    has_pending_approval: bool = False
+    has_expired_approval: bool = False
+    title: str = ""  # User-assigned session title (empty = auto-generated)
+
+
+class BatchDeleteSessionsRequest(BaseModel):
+    """Incoming batch session-delete request."""
+
+    session_ids: list[str]
 
 
 # ---------------------------------------------------------------------------
@@ -401,6 +830,32 @@ def _build_approval_request_info(interrupts: list[Any]) -> dict[str, Any]:
 
 def _now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
+
+
+def _attachment_extras(attachments: list[Attachment]) -> dict[str, Any] | None:
+    """Build the persistence extras dict for a user message's attachments."""
+    if not attachments:
+        return None
+    return {"attachments": [a.model_dump() for a in attachments]}
+
+
+def _with_attachment_note(message: str, attachments: list[Attachment]) -> str:
+    """Append a note to the model input describing uploaded attachments.
+
+    Uploaded files live inside the agent's workspace (``uploads/``), so the
+    agent's built-in file tools can read them — the note tells the model
+    where they are and that it should inspect them before answering.
+    """
+    if not attachments:
+        return message
+    listing = "; ".join(f"{a.name} -> {a.path}" for a in attachments)
+    note = (
+        "\n\n[User attachments: "
+        f"{listing}. The files are stored in the workspace 'uploads/' "
+        "directory; use your file tools (ls / read_file ...) to inspect "
+        "them before answering.]"
+    )
+    return (message or "") + note
 
 
 def _ensure_session(
@@ -527,6 +982,8 @@ def _extract_chunk_usage(msg_chunk: Any, metadata: Any = None) -> dict[str, int]
         except (TypeError, ValueError):
             continue
         if inp_i or out_i:
+            # Debug: log full usage structure to see if reasoning_tokens exists
+            logger.debug("Full usage metadata: %s", usage)
             return {"input_tokens": inp_i, "output_tokens": out_i}
     return None
 
@@ -558,6 +1015,7 @@ def _collect_turn_metadata(result: Any) -> dict[str, Any]:
     reasoning_parts: list[str] = []
     latest_todos: list[dict[str, Any]] | None = None
     delegations: list[dict[str, Any]] = []
+    a2ui_surfaces: list[dict[str, Any]] = []
 
     for msg in messages:
         msg_type = getattr(msg, "type", None)
@@ -587,6 +1045,10 @@ def _collect_turn_metadata(result: Any) -> dict[str, Any]:
                     "subagent": args["subagent_type"],
                     "description": args.get("description", ""),
                 })
+            elif name == "send_a2ui":
+                surface = _a2ui_surface_from_args(args)
+                if surface:
+                    a2ui_surfaces.append(surface)
 
     meta: dict[str, Any] = {}
     if reasoning_parts:
@@ -595,6 +1057,8 @@ def _collect_turn_metadata(result: Any) -> dict[str, Any]:
         meta["todos"] = latest_todos
     if delegations:
         meta["delegations"] = delegations
+    if a2ui_surfaces:
+        meta["a2ui_surfaces"] = a2ui_surfaces
     return meta
 
 
@@ -752,12 +1216,97 @@ def _extract_text_from_result(result: Any) -> tuple[str, list[dict[str, Any]]]:
                         "id": call.get("id", ""),
                     })
 
-    return "\n".join(text_parts), tool_calls
+    # A turn can carry several AI messages (a preamble before a tool call
+    # plus the final answer); keep them as separate paragraphs.
+    return "\n\n".join(text_parts), tool_calls
 
 
 # ---------------------------------------------------------------------------
-# Routes
+# Routes — chat attachment upload
 # ---------------------------------------------------------------------------
+
+# Per-file size cap for chat attachments (module-level so tests can patch).
+MAX_CHAT_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MiB
+
+# Workspace subdirectory where chat attachments are stored — inside the
+# agent workspace so its built-in file tools can read them directly.
+UPLOAD_DIR_NAME = "uploads"
+
+
+def _safe_upload_filename(name: str) -> str:
+    """Safe basename: basename only, word chars / dot / dash, max 120."""
+    base = (name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    cleaned = re.sub(r"[^\w.\-]", "_", base)[:120]
+    return cleaned or "file"
+
+
+@router.post("/upload")
+async def upload_chat_attachment(
+    req: Request,
+    agent_id: str,
+    file: UploadFile = File(..., description="File to attach"),
+) -> dict[str, Any]:
+    """Upload a chat attachment into the agent workspace's ``uploads/`` dir.
+
+    Mirrors the QwenPaw ``POST /console/upload`` flow, but stores files
+    inside the agent's workspace instead of a separate media directory so
+    the agent's file tools can read them.  The stored name carries a short
+    uuid prefix to avoid collisions; the original name is returned as-is.
+    """
+    manager = getattr(req.app.state, "agent_manager", None)
+    if manager is None:
+        raise HTTPException(
+            status_code=503, detail="MultiAgentManager is not available."
+        )
+
+    # Reject unknown agents instead of silently creating a workspace
+    # (same resolution as files_router._get_workspace).
+    workspace = manager.get_workspace(agent_id)
+    if workspace is None:
+        store = getattr(req.app.state, "store", None)
+        known = store is not None and agent_id in getattr(
+            store, "agent_states", {}
+        )
+        if not known:
+            raise HTTPException(
+                status_code=404, detail=f"Agent {agent_id} not found"
+            )
+        workspace = await manager.get_or_create_workspace(agent_id)
+
+    data = await file.read()
+    if len(data) > MAX_CHAT_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"File too large ({len(data)} bytes); "
+                f"limit is {MAX_CHAT_UPLOAD_BYTES} bytes"
+            ),
+        )
+
+    safe_name = _safe_upload_filename(file.filename or "file")
+    stored_name = f"{uuid.uuid4().hex[:12]}_{safe_name}"
+    rel_path = f"{UPLOAD_DIR_NAME}/{stored_name}"
+    target = workspace.workspace_dir / rel_path
+
+    def _write() -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+
+    try:
+        await asyncio.to_thread(_write)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to store upload: {exc}"
+        ) from exc
+
+    logger.info(
+        "chat upload[%s]: %s -> %s (%d bytes)",
+        agent_id,
+        safe_name,
+        rel_path,
+        len(data),
+    )
+    return {"name": safe_name, "path": rel_path, "size": len(data)}
 
 
 @router.post("", response_model=ChatResponse)
@@ -770,10 +1319,29 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     """
     store = _get_store(req)
 
+    # Zombie-resurrection guard: reject chats against a deleted agent
+    # BEFORE we touch ``_ensure_session`` / ``get_or_create_workspace``,
+    # both of which would otherwise recreate the session record and the
+    # workspace directory from scratch (this was the primary path by
+    # which deleted agents kept coming back — a stale browser tab would
+    # hit ``/api/chat`` with a cached ``agent_id`` and the write side
+    # would silently undo the earlier DELETE).
+    if request.agent_id not in known_agent_ids(req.app.state):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Agent {request.agent_id!r} not found",
+        )
+
     session_id = _ensure_session(store, request.session_id, request.agent_id)
 
-    # Persist user message.
-    _append_message(store, session_id, "user", request.message)
+    # Persist user message (attachments ride along as message extras).
+    _append_message(
+        store,
+        session_id,
+        "user",
+        request.message,
+        extras=_attachment_extras(request.attachments),
+    )
 
     # Resolve the agent's workspace so the agent.json config and kernel
     # files (agent.md / memory files) are available.
@@ -792,12 +1360,73 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     # The graph cache lives on the app-scoped ChatState (app.state).
     factory = getattr(req.app.state, "factory", None)
     chat_state = get_chat_state(req.app.state)
-    agent_graph = _resolve_agent_graph(
+
+    # Load agent config early for token recording and sandbox management
+    agent_config = {}
+    if workspace is not None:
+        try:
+            agent_config = workspace.read_agent_config()
+        except Exception:
+            logger.exception("Failed to read agent config for %s", request.agent_id)
+
+    # --- Sandbox session management ---
+    # If the agent uses sandbox, ensure the session is active before
+    # resolving the graph. The session manager handles lifecycle
+    # (create/renew/resume) based on the configured strategy.
+    sandbox_backend = None
+    sandbox_recreated = False  # Track if sandbox was recreated due to death
+    sandbox_mgr = getattr(req.app.state, "sandbox_session_manager", None)
+    if sandbox_mgr is not None and workspace is not None:
+        try:
+            backend_cfg = (agent_config.get("settings") or {}).get("backend", {})
+            if backend_cfg.get("type") == "sandbox":
+                session = await sandbox_mgr.get_or_create(
+                    request.agent_id, backend_cfg
+                )
+                if session is not None:
+                    sandbox_backend = session.backend
+                    sandbox_recreated = getattr(session, "_sandbox_recreated", False)
+                    logger.info(
+                        "Sandbox session ready for agent %s (id=%s, status=%s, recreated=%s)",
+                        request.agent_id,
+                        session.sandbox_id,
+                        session.status,
+                        sandbox_recreated,
+                    )
+        except Exception:
+            logger.exception(
+                "Failed to get/create sandbox session for agent %s",
+                request.agent_id,
+            )
+
+    # If sandbox was recreated, invalidate graph cache to force
+    # creation of a new graph with the new backend
+    if sandbox_recreated and chat_state is not None:
+        chat_state.graph_cache.pop(request.agent_id, None)
+        logger.info(
+            "Invalidated graph cache for agent %s (sandbox recreated)",
+            request.agent_id,
+        )
+
+    # --- Sandbox workspace sync -----------------------------------------
+    # Upload local workspace files (skills, memory, kernel) to the sandbox
+    # container so the SDK's middleware can discover them through the backend.
+    if sandbox_backend is not None and workspace is not None:
+        try:
+            await _sync_workspace_to_sandbox(workspace, sandbox_backend)
+        except Exception:
+            logger.exception(
+                "Failed to sync workspace to sandbox for agent %s",
+                request.agent_id,
+            )
+
+    agent_graph = await _resolve_agent_graph(
         request.agent_id,
         workspace,
         factory=factory,
         manager=manager,
         chat_state=chat_state,
+        sandbox_backend=sandbox_backend,
     )
 
     # Track the session thread so invalidation can purge checkpointed
@@ -816,8 +1445,17 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
 
     # Invoke the agent.  The session_id doubles as the LangGraph thread_id
     # so the checkpointer replays prior conversation turns into the model.
+    await mark_turn_begin(req.app.state, request.agent_id)
     try:
-        input_data = {"messages": [HumanMessage(content=request.message)]}
+        input_data = {
+            "messages": [
+                HumanMessage(
+                    content=_with_attachment_note(
+                        request.message, request.attachments
+                    )
+                )
+            ]
+        }
         result = await agent_graph.ainvoke(
             input_data,
             config={"configurable": {"thread_id": session_id}},
@@ -830,6 +1468,8 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
             status_code=500,
             detail=f"Agent invocation failed: {exc}",
         ) from exc
+    finally:
+        await mark_turn_end(req.app.state, request.agent_id)
 
     # --- HITL interrupt detection (Task 1.2) --------------------------
     # If the graph paused due to a HITL interrupt, surface the approval
@@ -859,7 +1499,7 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
         )
 
     content, tool_calls = _extract_text_from_result(result)
-    content = _normalize_assistant_text(content)
+    content = _collapse_blank_runs(content)
 
     # Bootstrap closed loop (second half): bootstrap.md disappeared during
     # this turn ⇒ initial setup finished ⇒ drop the cached graph (which
@@ -884,8 +1524,10 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     input_tokens, output_tokens = _extract_usage_from_result(result)
     if input_tokens or output_tokens:
         from agentcore.runtime.token_router import record_token_usage
+        from agentcore.runtime.model_factory import build_model_string
 
-        record_token_usage(request.agent_id, input_tokens, output_tokens)
+        _model_str = build_model_string(agent_config.get("model")) or ""
+        record_token_usage(request.agent_id, input_tokens, output_tokens, _model_str)
 
     # Persist assistant reply with the turn's metadata (reasoning, todo
     # plan, delegations) so history is complete for sync chat too.
@@ -935,16 +1577,141 @@ def _sse_event(event_type: str, data: dict[str, Any]) -> str:
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
-def _normalize_assistant_text(text: str) -> str:
-    """Clean token-boundary noise from streamed assistant text.
+# ---------------------------------------------------------------------------
+# A2UI (Agent-to-User Interface) projection helpers
+# ---------------------------------------------------------------------------
 
-    Streaming models (e.g. Qwen3) emit one chunk per token where every
-    chunk ends with ``\n``, so naive concatenation produces replies where
-    each word sits on its own line.  Collapse a single newline between
-    two non-newline characters back into a space (real paragraphs use
-    ``\n\n`` and survive), and clamp 3+ consecutive newlines to two.
+# Matches ``basicCatalog.id`` in @a2ui/web_core v0_9 — the client and the
+# server must agree on this identifier for surfaces to render.
+A2UI_BASIC_CATALOG_ID = (
+    "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json"
+)
+
+
+def _normalize_a2ui_action(action: Any) -> Any:
+    """Repair common LLM mis-shapings of a Button's ``action`` property.
+
+    The spec requires ``{"event": {"name": ..., "context": ...}}`` but models
+    sometimes emit ``name``/``context`` at the top level, or ``context`` as a
+    sibling of ``event``.  In that shape the client runtime reads an empty
+    context on click (``payload.event.context``), silently dropping the user's
+    form data.  Hoist the stray keys into the ``event`` envelope.
     """
-    text = re.sub(r"([^\n])\n(?=[^\n])", r"\1 ", text)
+    if not isinstance(action, dict):
+        return action
+    if "name" not in action and "context" not in action:
+        return action
+    fixed = dict(action)
+    event = fixed.get("event")
+    event = dict(event) if isinstance(event, dict) else {}
+    for key in ("name", "context"):
+        if key in fixed:
+            event.setdefault(key, fixed.pop(key))
+    fixed["event"] = event
+    return fixed
+
+
+def _normalize_a2ui_component(comp: dict[str, Any]) -> None:
+    """Repair common LLM mis-shapings in a single component (in place).
+
+    - ``action``: hoist stray top-level ``name``/``context`` into the
+      ``event`` envelope (see :func:`_normalize_a2ui_action`).
+    - ``Row``/``Column``: models habitually emit CSS values such as
+      ``flex-end`` for ``justify``/``align`` which fail the catalog's
+      camelCase enums — map them onto the legal values.
+    """
+    if "action" in comp:
+        comp["action"] = _normalize_a2ui_action(comp["action"])
+    if comp.get("component") in ("Row", "Column"):
+        for key, mapping in (
+            ("justify", _A2UI_JUSTIFY_ALIASES),
+            ("align", _A2UI_ALIGN_ALIASES),
+        ):
+            val = comp.get(key)
+            if isinstance(val, str) and val in mapping:
+                comp[key] = mapping[val]
+
+
+# CSS-style values LLMs commonly emit → legal A2UI basic-catalog enums.
+_A2UI_JUSTIFY_ALIASES = {
+    "flex-start": "start",
+    "flex-end": "end",
+    "space-between": "spaceBetween",
+    "space-around": "spaceAround",
+    "space-evenly": "spaceEvenly",
+}
+_A2UI_ALIGN_ALIASES = {
+    "flex-start": "start",
+    "flex-end": "end",
+    "baseline": "start",
+    "normal": "stretch",
+}
+
+
+def _a2ui_surface_from_args(args: Any) -> dict[str, Any] | None:
+    """Build an A2UI surface payload from ``send_a2ui`` tool-call args.
+
+    Assembles the v0.9 envelope sequence (``createSurface`` /
+    ``updateComponents`` / optional ``updateDataModel``) that the client's
+    ``MessageProcessor`` expects.  Returns ``None`` when the payload is
+    unusable (missing/invalid components) so a malformed LLM output
+    degrades to a plain tool card instead of breaking the stream.
+    """
+    if not isinstance(args, dict):
+        return None
+    components = args.get("components")
+    if not isinstance(components, list) or not components:
+        return None
+    components = [dict(c) for c in components if isinstance(c, dict) and c.get("id")]
+    for comp in components:
+        _normalize_a2ui_component(comp)
+    if not components:
+        return None
+
+    surface_id = f"surf-{uuid.uuid4().hex[:10]}"
+    messages: list[dict[str, Any]] = [
+        {
+            "version": "v0.9",
+            "createSurface": {
+                "surfaceId": surface_id,
+                "catalogId": A2UI_BASIC_CATALOG_ID,
+                "sendDataModel": True,
+            },
+        },
+        {
+            "version": "v0.9",
+            "updateComponents": {
+                "surfaceId": surface_id,
+                "components": components,
+            },
+        },
+    ]
+    data = args.get("data")
+    if isinstance(data, dict) and data:
+        messages.append({
+            "version": "v0.9",
+            "updateDataModel": {
+                "surfaceId": surface_id,
+                "path": "/",
+                "value": data,
+            },
+        })
+    return {
+        "surface_id": surface_id,
+        "title": str(args.get("surface_title") or ""),
+        "messages": messages,
+    }
+
+
+def _collapse_blank_runs(text: str) -> str:
+    """Trim surrounding whitespace and clamp 3+ newlines to one blank line.
+
+    This is deliberately *not* a text rewriter.  Assistant replies are stored
+    exactly as they were streamed, so a reloaded session renders identically
+    to the live answer; markdown structure (single-newline list items, table
+    rows, hard breaks) must survive untouched.  Only blank runs — which
+    markdown collapses anyway — are tidied away.
+    """
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
@@ -957,26 +1724,38 @@ def _append_assistant_turn(
     latest_todos: list[dict[str, Any]] | None,
     delegations: list[dict[str, Any]],
     latest_approval: dict[str, Any] | None,
+    token_usage: dict[str, int] | None = None,
+    a2ui_surfaces: list[dict[str, Any]] | None = None,
 ) -> None:
     """Persist one streaming turn as a single assistant message.
 
     Bundles the reply text, reasoning chain, tool calls, todo plan,
-    delegations and approval request into the session history.
+    delegations, approval request, A2UI surfaces and token consumption
+    into the session history.
     """
     extras: dict[str, Any] = {}
-    if reasoning_parts:
-        extras["reasoning"] = _normalize_assistant_text(
-            "\n".join(reasoning_parts)
-        )
+    # ``text_parts`` / ``reasoning_parts`` are *stream deltas*: joining them
+    # with any separator (or rewriting their newlines) makes the persisted
+    # reply differ from what the user just watched render — for CJK models it
+    # injects a space at every token boundary and breaks markdown.  Concatenate
+    # verbatim so history is a faithful record of the turn.
+    text = "".join(text_parts).strip()
+    reasoning = "".join(reasoning_parts).strip()
+    if reasoning:
+        extras["reasoning"] = reasoning
     if latest_todos:
         extras["todos"] = latest_todos
     if delegations:
         extras["delegations"] = delegations
     if latest_approval:
         extras["approval_request"] = latest_approval
+    if token_usage and (token_usage.get("input_tokens") or token_usage.get("output_tokens")):
+        extras["token_usage"] = token_usage
+    if a2ui_surfaces:
+        extras["a2ui_surfaces"] = a2ui_surfaces
     _append_message(
         store, session_id, "assistant",
-        _normalize_assistant_text("\n".join(text_parts)),
+        text,
         tool_calls or None,
         extras=extras,
     )
@@ -994,11 +1773,190 @@ def _friendly_stream_error(exc: BaseException) -> str:
         or "RateLimitError" in type(exc).__name__
         or "429" in text
     ):
+        # OpenCode Zen free-tier models surface ``FreeUsageLimitError``:
+        # a provider-side rate limit on free usage, not account balance.
+        if "FreeUsageLimitError" in text:
+            return (
+                "Stream error: 免费模型触发服务商限流（FreeUsageLimitError，429），"
+                "请稍后再试。这与账户余额无关，是免费额度的速率限制。"
+            )
         return (
             "Stream error: 模型服务配额已用尽（429），请稍后再试，"
             "或检查模型账户余额/额度配置。"
         )
     return f"Stream error: {text}"
+
+
+class _SubagentActivityCollector(BaseCallbackHandler):
+    """Surface subagent internal activity through LangChain callbacks.
+
+    The deepagents ``task`` tool invokes the subagent graph *inside* a tool
+    execution, so the parent's ``astream`` modes (updates/messages/values)
+    stay silent for the whole delegation.  LangChain propagates this
+    handler (and the ``lc_agent_name`` metadata the subagent's runnable is
+    bound with) down to every child run, which gives us:
+
+    * ``task`` tool start/end  → the *real* delegation lifecycle (replaces
+      the fake "parent stream is open" running indicator on the frontend)
+    * tools / chat-model calls inside the subagent → a live progress feed
+
+    Events are pushed onto an asyncio queue drained by the SSE generator
+    via :func:`_merge_stream_sources`, and accumulated per subagent name
+    so the delegation can be persisted with its full activity timeline.
+    """
+
+    def __init__(self) -> None:
+        self.queue: "asyncio.Queue[dict[str, Any]]" = asyncio.Queue()
+        # Subagent names observed from ``task`` tool starts — used to
+        # recognise child runs via their inherited ``lc_agent_name``.
+        self.subagent_names: set[str] = set()
+        # agent name → ordered activity entries (for persistence).
+        self.activity: dict[str, list[dict[str, Any]]] = {}
+        # run_id bookkeeping for lifecycle correlation.
+        self._task_runs: dict[str, str] = {}   # task run → agent name
+        self._tool_runs: dict[str, tuple[str, str]] = {}  # tool run → (agent, tool)
+
+    # -- helpers ---------------------------------------------------------
+
+    def _emit(self, agent: str, kind: str, name: str = "") -> None:
+        entry: dict[str, Any] = {
+            "agent": agent,
+            "kind": kind,  # started | tool | tool_done | thinking | completed | error
+            "name": name,
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        self.activity.setdefault(agent, []).append(entry)
+        try:
+            self.queue.put_nowait(entry)
+        except Exception:  # pragma: no cover — queue is unbounded
+            pass
+
+    def _subagent_of(self, metadata: Any) -> str | None:
+        name = (metadata or {}).get("lc_agent_name")
+        if isinstance(name, str) and name in self.subagent_names:
+            return name
+        return None
+
+    # -- callback hooks --------------------------------------------------
+
+    def on_tool_start(
+        self, serialized, input_str, *, run_id, parent_run_id=None,
+        tags=None, metadata=None, inputs=None, **kwargs,
+    ) -> None:
+        tool_name = (serialized or {}).get("name") or ""
+        if tool_name == "task":
+            sub = ""
+            if isinstance(inputs, dict):
+                sub = str(inputs.get("subagent_type") or "")
+            if not sub:
+                try:
+                    sub = str(json.loads(input_str or "{}").get("subagent_type") or "")
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    sub = ""
+            if sub:
+                self.subagent_names.add(sub)
+                self._task_runs[str(run_id)] = sub
+                self._emit(sub, "started")
+            return
+        agent = self._subagent_of(metadata)
+        if agent:
+            self._tool_runs[str(run_id)] = (agent, tool_name)
+            self._emit(agent, "tool", tool_name)
+
+    def on_tool_end(self, output, *, run_id, parent_run_id=None, tags=None,
+                    metadata=None, **kwargs) -> None:
+        rid = str(run_id)
+        sub = self._task_runs.pop(rid, None)
+        if sub is not None:
+            self._emit(sub, "completed")
+            return
+        agent_tool = self._tool_runs.pop(rid, None)
+        if agent_tool is not None:
+            self._emit(agent_tool[0], "tool_done", agent_tool[1])
+
+    def on_tool_error(self, error, *, run_id, parent_run_id=None, tags=None,
+                      metadata=None, **kwargs) -> None:
+        rid = str(run_id)
+        sub = self._task_runs.pop(rid, None)
+        if sub is not None:
+            self._emit(sub, "error")
+            return
+        agent_tool = self._tool_runs.pop(rid, None)
+        if agent_tool is not None:
+            self._emit(agent_tool[0], "error", agent_tool[1])
+
+    def on_chat_model_start(self, serialized, messages, *, run_id,
+                            parent_run_id=None, tags=None, metadata=None,
+                            **kwargs) -> None:
+        agent = self._subagent_of(metadata)
+        if agent:
+            self._emit(agent, "thinking")
+
+
+def _trim_activity(acts: "list[dict[str, Any]]", cap: int) -> "list[dict[str, Any]]":
+    """Cap a persisted activity timeline while keeping its terminal event.
+
+    A long delegation can emit hundreds of steps; store at most *cap* of
+    them, but never drop the trailing ``completed``/``error`` marker (the
+    frontend's running-state fallback relies on it) — when trimming, the
+    middle is collapsed into a single ``+N`` summary row.
+    """
+    if len(acts) <= cap:
+        return list(acts)
+    tail = acts[-1]
+    kept = acts[: cap - 2]
+    dropped = len(acts) - 1 - len(kept)
+    kept.append({"kind": "collapsed", "agent": tail.get("agent", ""), "name": f"+{dropped}"})
+    kept.append(tail)
+    return kept
+
+
+async def _merge_stream_sources(
+    primary: "AsyncGenerator[Any, None]",
+    activity: "asyncio.Queue[dict[str, Any]]",
+) -> "AsyncGenerator[tuple[str, Any], None]":
+    """Interleave graph chunks with subagent activity events.
+
+    Yields ``("chunk", x)`` for every item of *primary* (the agent graph's
+    ``astream``) and ``("activity", e)`` for events pushed by a
+    :class:`_SubagentActivityCollector`.  The primary iterator runs as a
+    task so activity surfaces even while the graph is blocked inside a
+    long-running tool node (a ``task`` delegation emits no astream chunks
+    at all — without this merge the live feed would arrive in one burst
+    after the delegation finished).
+
+    Exceptions from *primary* propagate to the caller; on normal
+    completion the remaining queued activity is drained first.
+    """
+    chunk_task: "asyncio.Future[Any] | None" = None
+    act_task: "asyncio.Future[Any] | None" = None
+    try:
+        while True:
+            if chunk_task is None:
+                chunk_task = asyncio.ensure_future(anext(primary))
+            if act_task is None:
+                act_task = asyncio.ensure_future(activity.get())
+            done, _ = await asyncio.wait(
+                {chunk_task, act_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if act_task is not None and act_task in done:
+                yield ("activity", act_task.result())
+                act_task = None
+                continue
+            if chunk_task is not None and chunk_task in done:
+                try:
+                    chunk = chunk_task.result()
+                except StopAsyncIteration:
+                    chunk_task = None
+                    while not activity.empty():
+                        yield ("activity", activity.get_nowait())
+                    return
+                chunk_task = None
+                yield ("chunk", chunk)
+    finally:
+        for _t in (chunk_task, act_task):
+            if _t is not None and not _t.done():
+                _t.cancel()
 
 
 async def _stream_chat_sse(
@@ -1008,6 +1966,8 @@ async def _stream_chat_sse(
     message: str,
     chat_state: ChatState,
     store: Any = None,
+    workspace: Any = None,
+    app_state: Any = None,
 ) -> AsyncGenerator[str, None]:
     """Generate SSE events from an agent stream.
 
@@ -1027,8 +1987,19 @@ async def _stream_chat_sse(
     input_data = {"messages": [HumanMessage(content=message)]}
     config = {"configurable": {"thread_id": session_id}}
 
+    # Subagent activity collector: attached to the run config so its
+    # callbacks propagate into ``task``-tool subagent invocations; the
+    # merged stream below surfaces those events as ``subagent_activity``
+    # SSE chunks while the graph itself is silent inside the delegation.
+    collector = _SubagentActivityCollector()
+    config = {**config, "callbacks": [collector]}
+
     # Track the session thread for invalidation purposes.
     chat_state.threads.setdefault(agent_id, set()).add(session_id)
+
+    # Bookkeeping: the agent is busy for the lifetime of this stream.
+    if app_state is not None:
+        await mark_turn_begin(app_state, agent_id)
 
     total_input = 0
     total_output = 0
@@ -1042,12 +2013,36 @@ async def _stream_chat_sse(
     latest_todos: list[dict[str, Any]] | None = None
     delegations: list[dict[str, Any]] = []
     latest_approval: dict[str, Any] | None = None
+    # A2UI interactive surfaces rendered this turn (projected from
+    # ``send_a2ui`` calls and persisted alongside the reply).
+    a2ui_surfaces: list[dict[str, Any]] = []
+    # Dedup guard: a send_a2ui call is projected exactly once even though
+    # it can surface in both ``messages`` and ``updates`` stream modes.
+    projected_a2ui_keys: set[str] = set()
     # Track the index of the currently in-progress todo for real-time status updates.
     current_todo_idx: int = -1
     # When the agent manages todo statuses itself (write_todos calls carry
     # non-pending statuses), disable the heuristic auto-advance to avoid
     # conflicting updates.
     agent_managed_todos = False
+
+    # Pre-compute the set of tools requiring approval so we can detect
+    # interrupts early in ``updates`` mode — before the ``values`` mode
+    # fires its (delayed) ``__interrupt__`` event.  This ensures the
+    # approval card appears immediately when tool calls are detected,
+    # not after the full LLM reply has been streamed.
+    approval_tool_names: set[str] = set()
+    if workspace is not None:
+        try:
+            from agentcore.runtime.security_router import apply_global_approval
+            _cfg = workspace.read_agent_config()
+            _settings = _cfg.get("settings", {}) or {}
+            _merged = apply_global_approval(_settings)
+            for _rule in (_merged.get("interrupt_rules") or []):
+                if _rule.get("require_approval") and _rule.get("tool_name"):
+                    approval_tool_names.add(_rule["tool_name"])
+        except Exception:
+            logger.debug("Failed to pre-read interrupt_rules for %s", agent_id)
 
     # Streaming tool-call accumulator — tool calls arrive as fragmented
     # chunks; we merge them by index and only emit an early ``tool_calls``
@@ -1141,12 +2136,23 @@ async def _stream_chat_sse(
         if persisted or store is None:
             return
         if not (text_parts or tool_calls or reasoning_parts
-                or latest_todos or delegations or latest_approval):
+                or latest_todos or delegations or latest_approval
+                or a2ui_surfaces):
             return
+        # Attach the live subagent activity timeline to each delegation
+        # entry so history replay can render what the subagent actually
+        # did (best-effort; merged when one agent is delegated to twice).
+        for _d in delegations:
+            _acts = collector.activity.get(_d.get("subagent", ""))
+            if _acts:
+                _d["activity"] = _trim_activity(_acts, 80)
+                _d["running"] = False
         try:
             _append_assistant_turn(
                 store, session_id, text_parts, reasoning_parts,
                 tool_calls, latest_todos, delegations, latest_approval,
+                token_usage={"input_tokens": total_input, "output_tokens": total_output},
+                a2ui_surfaces=a2ui_surfaces or None,
             )
             persisted = True
         except Exception:
@@ -1156,11 +2162,21 @@ async def _stream_chat_sse(
             )
 
     try:
-        async for chunk in agent_graph.astream(
-            input_data,
-            config=config,
-            stream_mode=["updates", "messages", "values"],
+        async for item in _merge_stream_sources(
+            agent_graph.astream(
+                input_data,
+                config=config,
+                stream_mode=["updates", "messages", "values"],
+            ),
+            collector.queue,
         ):
+            if item[0] == "activity":
+                yield _sse_event("subagent_activity", {
+                    **item[1],
+                    "agent_id": agent_id,
+                })
+                continue
+            chunk = item[1]
             # When multiple stream_modes are passed, each chunk is a
             # tuple of (mode, data).
             if not isinstance(chunk, (list, tuple)) or len(chunk) < 2:
@@ -1173,12 +2189,21 @@ async def _stream_chat_sse(
                 # data is typically (message_chunk, metadata) tuple.
                 if isinstance(data, (list, tuple)) and len(data) >= 1:
                     msg_chunk = data[0]
+
+                    # Only stream content from AI messages — skip ToolMessage
+                    # and other non-AI messages whose content (e.g. file read
+                    # results) would flood the chat with raw tool output.
+                    msg_type = getattr(msg_chunk, "type", None)
+                    if msg_type is None and isinstance(msg_chunk, dict):
+                        msg_type = msg_chunk.get("type")
+                    is_ai_content = msg_type not in ("tool", "human", "chat")
+
                     content = ""
                     if hasattr(msg_chunk, "content"):
                         content = msg_chunk.content or ""
                     elif isinstance(msg_chunk, dict):
                         content = msg_chunk.get("content", "")
-                    if content:
+                    if content and is_ai_content:
                         text_parts.append(content)
                         yield _sse_event("messages", {
                             "content": content,
@@ -1203,15 +2228,71 @@ async def _stream_chat_sse(
                         raw_chunks = msg_chunk.get("tool_call_chunks")
                     if raw_chunks:
                         completed_calls = _process_tool_call_chunks(list(raw_chunks))
-                        # write_todos is projected as a todo event, not a card.
+
+                        # Early interrupt: if any completed tool call
+                        # requires approval, emit the interrupt event
+                        # immediately — before the tool_calls event —
+                        # so the approval card appears without the tool
+                        # card showing first.
+                        if approval_tool_names and completed_calls:
+                            _early_approval_calls = [
+                                c for c in completed_calls
+                                if c["name"] in approval_tool_names
+                            ]
+                            if _early_approval_calls:
+                                _early_actions = []
+                                for _ea in _early_approval_calls:
+                                    _ea_args = _ea.get("args", {})
+                                    if isinstance(_ea_args, str):
+                                        try:
+                                            _ea_args = json.loads(_ea_args)
+                                        except (json.JSONDecodeError, ValueError):
+                                            _ea_args = {}
+                                    _early_actions.append({
+                                        "name": _ea.get("name", ""),
+                                        "args": _ea_args if isinstance(_ea_args, dict) else {},
+                                        "description": f"{_ea.get('name', '')}({json.dumps(_ea_args, ensure_ascii=False)[:120]})",
+                                    })
+                                _early_approval_info = {"actions": _early_actions}
+                                latest_approval = _early_approval_info
+                                yield _sse_event("interrupts", {
+                                    "status": "pending_approval",
+                                    "approval_request": _early_approval_info,
+                                    "agent_id": agent_id,
+                                    "session_id": session_id,
+                                })
+                                return
+
+                        # write_todos / send_a2ui are projected as
+                        # dedicated events, not tool cards.
                         card_calls = [
-                            c for c in completed_calls if c["name"] != "write_todos"
+                            c for c in completed_calls
+                            if c["name"] not in ("write_todos", "send_a2ui")
                         ]
                         if card_calls:
                             yield _sse_event("tool_calls", {
                                 "tool_calls": card_calls,
                                 "agent_id": agent_id,
                             })
+                        for call in completed_calls:
+                            if call["name"] == "send_a2ui":
+                                surface = _a2ui_surface_from_args(call["args"])
+                                if surface:
+                                    try:
+                                        _key = json.dumps(
+                                            call["args"], sort_keys=True, ensure_ascii=False
+                                        )
+                                    except (TypeError, ValueError):
+                                        _key = ""
+                                    if _key and _key in projected_a2ui_keys:
+                                        continue
+                                    if _key:
+                                        projected_a2ui_keys.add(_key)
+                                    a2ui_surfaces.append(surface)
+                                    yield _sse_event("a2ui", {
+                                        **surface,
+                                        "agent_id": agent_id,
+                                    })
                         for call in completed_calls:
                             if call["name"] == "write_todos":
                                 args = call["args"]
@@ -1313,6 +2394,28 @@ async def _stream_chat_sse(
                                                     "todos": todos,
                                                     "agent_id": agent_id,
                                                 })
+                                        elif call.get("name") == "send_a2ui":
+                                            # Fallback projection for models
+                                            # that only expose tool calls via
+                                            # node updates (no chunks).
+                                            _a2args = call.get("args", {}) or {}
+                                            try:
+                                                _key = json.dumps(
+                                                    _a2args, sort_keys=True, ensure_ascii=False
+                                                )
+                                            except (TypeError, ValueError):
+                                                _key = ""
+                                            if _key and _key in projected_a2ui_keys:
+                                                continue
+                                            if _key:
+                                                projected_a2ui_keys.add(_key)
+                                            surface = _a2ui_surface_from_args(_a2args)
+                                            if surface:
+                                                a2ui_surfaces.append(surface)
+                                                yield _sse_event("a2ui", {
+                                                    **surface,
+                                                    "agent_id": agent_id,
+                                                })
                                     yield _sse_event("subagents", {
                                         "node": node_name,
                                         "tool_calls": calls,
@@ -1356,10 +2459,32 @@ async def _stream_chat_sse(
         # Client abort / stop: the generator is closed here (CancelledError
         # is a BaseException, not caught above) — keep the partial turn.
         _persist_partial()
+        if app_state is not None:
+            await mark_turn_end(app_state, agent_id)
+            # Pull agent-created files back into sandbox_storage/ (detached
+            # so it never delays the done event or dies with the stream).
+            _schedule_pull(app_state, agent_id, workspace)
 
     # Persist the full assistant turn: reply text, reasoning, tool calls,
     # todo plan, delegations and any approval request.
     _persist_partial()
+
+    # Record token consumption (best-effort; never breaks the chat flow).
+    if total_input or total_output:
+        from agentcore.runtime.token_router import record_token_usage
+        from agentcore.runtime.model_factory import build_model_string
+
+        _model_str = ""
+        manager = getattr(app_state, "agent_manager", None) if app_state is not None else None
+        if manager is not None:
+            try:
+                _ws = manager.get_workspace(agent_id)
+                if _ws is not None:
+                    _cfg = _ws.read_agent_config()
+                    _model_str = build_model_string(_cfg.get("model")) or ""
+            except Exception:
+                pass
+        record_token_usage(agent_id, total_input, total_output, _model_str)
 
     # Emit final done event.
     yield _sse_event("done", {
@@ -1369,6 +2494,83 @@ async def _stream_chat_sse(
         "output_tokens": total_output,
     })
 
+    # Auto-generate session title using AI (best-effort, background task).
+    if store is not None and workspace is not None:
+        session = store.load_session(session_id)
+        if session and not session.get("title"):
+            messages = session.get("messages", [])
+            if messages:
+                try:
+                    from agentcore.runtime.model_factory import resolve_model
+                    model_cfg = workspace.read_agent_config().get("model") or {}
+                    model = resolve_model(model_cfg)
+                    if model is not None:
+                        asyncio.create_task(
+                            _ai_generate_session_title(
+                                store, session_id, messages, model
+                            )
+                        )
+                except Exception:
+                    logger.debug("Failed to start title generation", exc_info=True)
+
+
+async def _ai_generate_session_title(
+    store: Any,
+    session_id: str,
+    messages: list[dict[str, Any]],
+    model: Any,
+) -> None:
+    """Generate a concise session title using the agent's LLM.
+
+    Runs as a background task — failures are silently logged.
+    """
+    try:
+        from langchain_core.messages import HumanMessage as _HumanMessage
+
+        # Build a conversation summary from the first few messages.
+        summary_parts: list[str] = []
+        for msg in messages[:6]:
+            role = msg.get("role", "")
+            content = (msg.get("content") or "").strip()
+            if not content:
+                continue
+            if role == "user":
+                summary_parts.append(f"\u7528\u6237: {content[:200]}")
+            elif role == "assistant":
+                summary_parts.append(f"\u52a9\u624b: {content[:200]}")
+        if not summary_parts:
+            return
+
+        conversation = "\n".join(summary_parts)
+        prompt = (
+            f"\u6839\u636e\u4ee5\u4e0b\u5bf9\u8bdd\u5185\u5bb9\uff0c\u751f\u6210\u4e00\u4e2a\u7b80\u6d01\u7684\u4f1a\u8bdd\u6807\u9898\u3002"
+            f"\u8981\u6c42\uff1a\u4e0d\u8d85\u8fc710\u4e2a\u5b57\uff0c\u4e0d\u8981\u5f15\u53f7\uff0c\u4e0d\u8981\u526f\u6807\u9898\u3002"
+            f"\u53ea\u8fd4\u56de\u6807\u9898\u6587\u672c\u3002\n\n\u5bf9\u8bdd\u5185\u5bb9\uff1a\n{conversation}"
+        )
+
+        # Resolve to a callable chat model.
+        chat_model = model
+        if isinstance(model, str):
+            from langchain.chat_models import init_chat_model
+            chat_model = init_chat_model(model)
+
+        from langchain_core.messages import SystemMessage as _SystemMessage
+        response = await chat_model.ainvoke([
+            _SystemMessage(content="\u4f60\u662f\u4e00\u4e2a\u4f1a\u8bdd\u6807\u9898\u751f\u6210\u5668\u3002\u53ea\u8fd4\u56de\u6807\u9898\u6587\u672c\uff0c\u4e0d\u8981\u4efb\u4f55\u89e3\u91ca\u3002"),
+            _HumanMessage(content=prompt),
+        ])
+
+        title = (response.content or "").strip().strip('"\'').strip()
+        if not title or len(title) > 50:
+            return
+
+        session = store.load_session(session_id)
+        if session and not session.get("title"):
+            session["title"] = title
+            store.save_session(session_id, session)
+            logger.info("AI-generated session title: %r", title)
+    except Exception:
+        logger.debug("AI title generation failed", exc_info=True)
 
 def _serialise_node_output(node_output: Any) -> dict[str, Any]:
     """Best-effort serialisation of a node update for SSE."""
@@ -1411,8 +2613,25 @@ async def stream_chat(request: ChatRequest, req: Request) -> StreamingResponse:
     - ``error``: an error occurred
     """
     store = _get_store(req)
+    # Zombie-resurrection guard — see the ``chat`` endpoint above for
+    # the rationale.  ``stream_chat`` is the primary entry point the
+    # frontend hits, so a stale tab retaining a deleted ``agent_id``
+    # here would both recreate the workspace directory and repopulate
+    # ``store.sessions`` with orphan records, immediately undoing the
+    # startup purge.
+    if request.agent_id not in known_agent_ids(req.app.state):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Agent {request.agent_id!r} not found",
+        )
     session_id = _ensure_session(store, request.session_id, request.agent_id)
-    _append_message(store, session_id, "user", request.message)
+    _append_message(
+        store,
+        session_id,
+        "user",
+        request.message,
+        extras=_attachment_extras(request.attachments),
+    )
 
     workspace = None
     manager = getattr(req.app.state, "agent_manager", None)
@@ -1424,18 +2643,84 @@ async def stream_chat(request: ChatRequest, req: Request) -> StreamingResponse:
 
     factory = getattr(req.app.state, "factory", None)
     chat_state = get_chat_state(req.app.state)
-    agent_graph = _resolve_agent_graph(
+
+    # Load agent config early for token recording and sandbox management
+    agent_config = {}
+    if workspace is not None:
+        try:
+            agent_config = workspace.read_agent_config()
+        except Exception:
+            logger.exception("Failed to read agent config for %s", request.agent_id)
+
+    # --- Sandbox session management ---
+    sandbox_backend = None
+    sandbox_recreated = False  # Track if sandbox was recreated due to death
+    sandbox_mgr = getattr(req.app.state, "sandbox_session_manager", None)
+    if sandbox_mgr is not None and workspace is not None:
+        try:
+            backend_cfg = (agent_config.get("settings") or {}).get("backend", {})
+            if backend_cfg.get("type") == "sandbox":
+                session = await sandbox_mgr.get_or_create(
+                    request.agent_id, backend_cfg
+                )
+                if session is not None:
+                    sandbox_backend = session.backend
+                    sandbox_recreated = getattr(session, "_sandbox_recreated", False)
+                    logger.info(
+                        "Sandbox session ready for agent %s (id=%s, status=%s, recreated=%s)",
+                        request.agent_id,
+                        session.sandbox_id,
+                        session.status,
+                        sandbox_recreated,
+                    )
+        except Exception:
+            logger.exception(
+                "Failed to get/create sandbox session for agent %s",
+                request.agent_id,
+            )
+
+    # If sandbox was recreated, invalidate graph cache to force
+    # creation of a new graph with the new backend
+    if sandbox_recreated and chat_state is not None:
+        chat_state.graph_cache.pop(request.agent_id, None)
+        logger.info(
+            "Invalidated graph cache for agent %s (sandbox recreated)",
+            request.agent_id,
+        )
+
+    # --- Sandbox workspace sync -----------------------------------------
+    # Upload local workspace files (skills, memory, kernel) to the sandbox
+    # container so the SDK's middleware can discover them through the backend.
+    if sandbox_backend is not None and workspace is not None:
+        try:
+            await _sync_workspace_to_sandbox(workspace, sandbox_backend)
+        except Exception:
+            logger.exception(
+                "Failed to sync workspace to sandbox for agent %s",
+                request.agent_id,
+            )
+
+    agent_graph = await _resolve_agent_graph(
         request.agent_id,
         workspace,
         factory=factory,
         manager=manager,
         chat_state=chat_state,
+        sandbox_backend=sandbox_backend,
     )
 
+    # The outer keep-alive wrapper emits SSE comment lines during idle
+    # periods (e.g. waiting for a HITL approval) so the connection is
+    # not dropped by browsers or proxies.
     return StreamingResponse(
-        _stream_chat_sse(
-            agent_graph, session_id, request.agent_id,
-            request.message, chat_state, store=store,
+        keepalive_sse(
+            _stream_chat_sse(
+                agent_graph, session_id, request.agent_id,
+                _with_attachment_note(request.message, request.attachments),
+                chat_state, store=store,
+                workspace=workspace,
+                app_state=req.app.state,
+            )
         ),
         media_type="text/event-stream",
         headers={
@@ -1446,18 +2731,62 @@ async def stream_chat(request: ChatRequest, req: Request) -> StreamingResponse:
     )
 
 
+def _session_has_pending_approval(data: dict) -> bool:
+    """Return True when the last assistant message carries an un-decided
+    approval request (requests expired by the cleanup job don't count)."""
+    messages: list[dict] = data.get("messages", [])
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant":
+            if (
+                msg.get("approval_request")
+                and not msg.get("approval")
+                and not msg.get("approval_expired")
+            ):
+                return True
+            # Only the most recent assistant message matters.
+            return False
+    return False
+
+
+def _session_has_expired_approval(data: dict) -> bool:
+    """Return True when the last assistant message was auto-expired.
+
+    Such sessions were pending approvals raised by background runs that
+    nobody answered in time; the Inbox can surface them as expired.
+    """
+    return has_expired_approval(data)
+
+
+COLON = None
+
+
 @router.get("/sessions", response_model=list[SessionInfo])
 async def list_sessions(
     req: Request,
     agent_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """List all sessions, optionally filtered by *agent_id*."""
+    """List all sessions, optionally filtered by *agent_id*.
+
+    Each entry carries ``has_pending_approval`` so the frontend can
+    highlight sessions that are paused waiting for a HITL decision
+    (e.g. background heartbeat / memory consolidation / cron runs).
+    """
     store = _get_store(req)
     all_sessions = store.load_sessions()
 
+    # Defensive filter: hide sessions belonging to deleted agents.
+    # Startup purge normally removes them, but a browser tab that raced
+    # the delete could still leave an orphan record behind — showing it
+    # in the sessions list is what made the sessions page appear to
+    # have "more agents" than the management page.
+    known = known_agent_ids(req.app.state)
+
     results: list[dict[str, Any]] = []
     for sid, data in all_sessions.items():
-        if agent_id is not None and data.get("agent_id") != agent_id:
+        owner = data.get("agent_id") or ""
+        if owner and owner not in known:
+            continue
+        if agent_id is not None and owner != agent_id:
             continue
         results.append({
             "session_id": data.get("session_id", sid),
@@ -1465,10 +2794,42 @@ async def list_sessions(
             "created_at": data.get("created_at", ""),
             "updated_at": data.get("updated_at", ""),
             "message_count": len(data.get("messages", [])),
+            "has_pending_approval": _session_has_pending_approval(data),
+            "has_expired_approval": _session_has_expired_approval(data),
+            "title": data.get("title", ""),
         })
 
     results.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
     return results
+
+
+class RenameSessionRequest(BaseModel):
+    """Payload for renaming a session."""
+    title: str
+
+
+@router.post("/sessions/{session_id}/rename")
+async def rename_session(
+    session_id: str,
+    payload: RenameSessionRequest,
+    req: Request,
+) -> dict[str, Any]:
+    """Rename a session.
+
+    Updates the session's ``title`` field.  Empty string clears the title
+    (reverts to auto-generated display).
+    """
+    store = _get_store(req)
+    session = store.load_session(session_id)
+    if session is None:
+        raise HTTPException(
+            status_code=404, detail=f"Session {session_id!r} not found",
+        )
+    session["title"] = payload.title.strip()
+    session["updated_at"] = _now_iso()
+    store.save_session(session_id, session)
+    logger.info("Session %s renamed to %r", session_id, session["title"])
+    return {"session_id": session_id, "title": session["title"]}
 
 
 # ---------------------------------------------------------------------------
@@ -1500,23 +2861,30 @@ async def submit_approval(
             detail=f"Session {session_id!r} not found",
         )
 
-    # Resolve the cached agent graph.
+    # Resolve the cached agent graph (auto-rebuild after server restart).
     chat_state = get_chat_state(req.app.state)
-    agent_graph = chat_state.graph_cache.get(agent_id)
-    if agent_graph is None:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"Agent graph for {agent_id!r} is not cached. "
-                "The session may have expired."
-            ),
-        )
+    agent_graph = await _ensure_agent_graph(req, agent_id, chat_state)
 
     if chat_state.checkpointer is None:
         raise HTTPException(
             status_code=503,
             detail="Checkpointer not available — cannot resume interrupted session.",
         )
+
+    # Load agent config for token recording
+    manager = getattr(req.app.state, "agent_manager", None)
+    workspace = None
+    if manager is not None:
+        try:
+            workspace = await manager.get_or_create_workspace(agent_id)
+        except Exception:
+            logger.exception("Failed to load workspace for agent %s", agent_id)
+    agent_config = {}
+    if workspace is not None:
+        try:
+            agent_config = workspace.read_agent_config()
+        except Exception:
+            logger.exception("Failed to read agent config for %s", agent_id)
 
     # --- Enforce the interrupt policy (allowed_decisions) -----------
     # The SDK's HumanInTheLoopMiddleware embeds each tool's allowed
@@ -1609,6 +2977,7 @@ async def submit_approval(
     config = {"configurable": {"thread_id": session_id}}
     resume_value = {"decisions": decisions}
 
+    await mark_turn_begin(req.app.state, agent_id)
     try:
         result = await asyncio.wait_for(
             agent_graph.ainvoke(
@@ -1640,6 +3009,8 @@ async def submit_approval(
             status_code=500,
             detail=f"Failed to resume agent: {exc}",
         ) from exc
+    finally:
+        await mark_turn_end(req.app.state, agent_id)
 
     # Check for further interrupts (another approval round).
     more_interrupts = _extract_interrupts_from_result(result)
@@ -1663,7 +3034,7 @@ async def submit_approval(
 
     # Agent completed — extract reply.
     content, tool_calls = _extract_text_from_result(result)
-    content = _normalize_assistant_text(content)
+    content = _collapse_blank_runs(content)
 
     # Record the decision on the message that requested the approval, so
     # session history shows the full approve → resume → reply sequence, and
@@ -1679,8 +3050,10 @@ async def submit_approval(
     input_tokens, output_tokens = _extract_usage_from_result(result)
     if input_tokens or output_tokens:
         from agentcore.runtime.token_router import record_token_usage
+        from agentcore.runtime.model_factory import build_model_string
 
-        record_token_usage(agent_id, input_tokens, output_tokens)
+        _model_str = build_model_string(agent_config.get("model")) or ""
+        record_token_usage(agent_id, input_tokens, output_tokens, _model_str)
 
     return ChatResponse(
         session_id=session_id,
@@ -1714,17 +3087,9 @@ async def submit_approval_stream(
             detail=f"Session {session_id!r} not found",
         )
 
-    # Resolve the cached agent graph.
+    # Resolve the cached agent graph (auto-rebuild after server restart).
     chat_state = get_chat_state(req.app.state)
-    agent_graph = chat_state.graph_cache.get(agent_id)
-    if agent_graph is None:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"Agent graph for {agent_id!r} is not cached. "
-                "The session may have expired."
-            ),
-        )
+    agent_graph = await _ensure_agent_graph(req, agent_id, chat_state)
 
     if chat_state.checkpointer is None:
         raise HTTPException(
@@ -1807,15 +3172,18 @@ async def submit_approval_stream(
     resume_value = {"decisions": decisions}
 
     return StreamingResponse(
-        _stream_approval_sse(
-            agent_graph=agent_graph,
-            config=config,
-            resume_value=resume_value,
-            agent_id=agent_id,
-            session_id=session_id,
-            store=store,
-            decision=approval.decision,
-            tool_name_probe=tool_name_for_audit,
+        keepalive_sse(
+            _stream_approval_sse(
+                agent_graph=agent_graph,
+                config=config,
+                resume_value=resume_value,
+                agent_id=agent_id,
+                session_id=session_id,
+                store=store,
+                decision=approval.decision,
+                tool_name_probe=tool_name_for_audit,
+                app_state=req.app.state,
+            )
         ),
         media_type="text/event-stream",
         headers={
@@ -1835,12 +3203,21 @@ async def _stream_approval_sse(
     store: Any,
     decision: str,
     tool_name_probe: str,
+    app_state: Any = None,
 ) -> AsyncIterator[str]:
     """Stream the agent's response after approval via SSE."""
+    # Bookkeeping: the agent is busy for the lifetime of this stream.
+    if app_state is not None:
+        await mark_turn_begin(app_state, agent_id)
+
     text_parts: list[str] = []
     reasoning_parts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
     latest_todos: list[dict[str, Any]] = []
+    # A2UI surfaces rendered after the resume (same projection as the
+    # main stream).
+    a2ui_surfaces: list[dict[str, Any]] = []
+    projected_a2ui_keys: set[str] = set()
     total_input = 0
     total_output = 0
     current_todo_idx: int = -1
@@ -1851,6 +3228,12 @@ async def _stream_approval_sse(
     # Streaming tool-call accumulator (same pattern as main stream).
     pending_tool_chunks: dict[int, dict[str, Any]] = {}
     emitted_tool_call_keys: set[str] = set()
+
+    # Subagent activity collector (same wiring as the main stream): the
+    # resumed graph may delegate via ``task`` right after the approval,
+    # and delegation runs are invisible to the astream modes.
+    collector = _SubagentActivityCollector()
+    config = {**config, "callbacks": [collector]}
 
     def _process_tool_call_chunks_approval(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Merge tool-call chunk deltas; return calls that became complete."""
@@ -1914,12 +3297,14 @@ async def _stream_approval_sse(
         """Persist whatever was produced so far (best-effort)."""
         text = "".join(text_parts).strip()
         reasoning = "".join(reasoning_parts).strip()
-        if not (text or reasoning or tool_calls or latest_todos):
+        if not (text or reasoning or tool_calls or latest_todos or a2ui_surfaces):
             return
         try:
             _append_assistant_turn(
                 store, session_id, text_parts, reasoning_parts,
                 tool_calls, latest_todos or None, [], None,
+                token_usage={"input_tokens": total_input, "output_tokens": total_output},
+                a2ui_surfaces=a2ui_surfaces or None,
             )
         except Exception:
             logger.exception(
@@ -1928,11 +3313,21 @@ async def _stream_approval_sse(
             )
 
     try:
-        async for chunk in agent_graph.astream(
-            Command(resume=resume_value),
-            config=config,
-            stream_mode=["updates", "messages", "values"],
+        async for item in _merge_stream_sources(
+            agent_graph.astream(
+                Command(resume=resume_value),
+                config=config,
+                stream_mode=["updates", "messages", "values"],
+            ),
+            collector.queue,
         ):
+            if item[0] == "activity":
+                yield _sse_event("subagent_activity", {
+                    **item[1],
+                    "agent_id": agent_id,
+                })
+                continue
+            chunk = item[1]
             if not isinstance(chunk, (list, tuple)) or len(chunk) < 2:
                 continue
 
@@ -1941,12 +3336,20 @@ async def _stream_approval_sse(
             if mode == "messages":
                 if isinstance(data, (list, tuple)) and len(data) >= 1:
                     msg_chunk = data[0]
+
+                    # Only stream content from AI messages — skip ToolMessage
+                    # results that would flood the chat with raw tool output.
+                    msg_type = getattr(msg_chunk, "type", None)
+                    if msg_type is None and isinstance(msg_chunk, dict):
+                        msg_type = msg_chunk.get("type")
+                    is_ai_content = msg_type not in ("tool", "human", "chat")
+
                     content = ""
                     if hasattr(msg_chunk, "content"):
                         content = msg_chunk.content or ""
                     elif isinstance(msg_chunk, dict):
                         content = msg_chunk.get("content", "")
-                    if content:
+                    if content and is_ai_content:
                         text_parts.append(content)
                         yield _sse_event("messages", {
                             "content": content,
@@ -1969,13 +3372,33 @@ async def _stream_approval_sse(
                     if raw_chunks:
                         completed_calls = _process_tool_call_chunks_approval(list(raw_chunks))
                         card_calls = [
-                            c for c in completed_calls if c["name"] != "write_todos"
+                            c for c in completed_calls
+                            if c["name"] not in ("write_todos", "send_a2ui")
                         ]
                         if card_calls:
                             yield _sse_event("tool_calls", {
                                 "tool_calls": card_calls,
                                 "agent_id": agent_id,
                             })
+                        for call in completed_calls:
+                            if call["name"] == "send_a2ui":
+                                surface = _a2ui_surface_from_args(call["args"])
+                                if surface:
+                                    try:
+                                        _key = json.dumps(
+                                            call["args"], sort_keys=True, ensure_ascii=False
+                                        )
+                                    except (TypeError, ValueError):
+                                        _key = ""
+                                    if _key and _key in projected_a2ui_keys:
+                                        continue
+                                    if _key:
+                                        projected_a2ui_keys.add(_key)
+                                    a2ui_surfaces.append(surface)
+                                    yield _sse_event("a2ui", {
+                                        **surface,
+                                        "agent_id": agent_id,
+                                    })
                         for call in completed_calls:
                             if call["name"] == "write_todos":
                                 args = call["args"]
@@ -2026,7 +3449,27 @@ async def _stream_approval_sse(
                                     ]
                                     tool_calls.extend(calls)
                                     for call in calls:
-                                        if call.get("name") == "write_todos":
+                                        if call.get("name") == "send_a2ui":
+                                            # Fallback projection (same as
+                                            # the main stream's updates mode).
+                                            _a2args = call.get("args", {}) or {}
+                                            try:
+                                                _key = json.dumps(
+                                                    _a2args, sort_keys=True, ensure_ascii=False
+                                                )
+                                            except (TypeError, ValueError):
+                                                _key = ""
+                                            if not (_key and _key in projected_a2ui_keys):
+                                                if _key:
+                                                    projected_a2ui_keys.add(_key)
+                                                surface = _a2ui_surface_from_args(_a2args)
+                                                if surface:
+                                                    a2ui_surfaces.append(surface)
+                                                    yield _sse_event("a2ui", {
+                                                        **surface,
+                                                        "agent_id": agent_id,
+                                                    })
+                                        elif call.get("name") == "write_todos":
                                             todos = (call.get("args", {}) or {}).get("todos", [])
                                             if todos:
                                                 if any(t.get("status") not in (None, "pending") for t in todos):
@@ -2081,6 +3524,11 @@ async def _stream_approval_sse(
         return
     finally:
         _persist_partial()
+        if app_state is not None:
+            await mark_turn_end(app_state, agent_id)
+            # Same post-turn pull as the main chat stream (workspace is
+            # resolved from the agent manager inside the helper).
+            _schedule_pull(app_state, agent_id, None)
 
     # Record the decision on the message.
     _mark_last_pending_approval(
@@ -2091,7 +3539,19 @@ async def _stream_approval_sse(
     # Record token consumption.
     if total_input or total_output:
         from agentcore.runtime.token_router import record_token_usage
-        record_token_usage(agent_id, total_input, total_output)
+        from agentcore.runtime.model_factory import build_model_string
+
+        _model_str = ""
+        manager = getattr(app_state, "agent_manager", None) if app_state is not None else None
+        if manager is not None:
+            try:
+                _ws = manager.get_workspace(agent_id)
+                if _ws is not None:
+                    _cfg = _ws.read_agent_config()
+                    _model_str = build_model_string(_cfg.get("model")) or ""
+            except Exception:
+                pass
+        record_token_usage(agent_id, total_input, total_output, _model_str)
 
     yield _sse_event("done", {
         "agent_id": agent_id,
@@ -2113,12 +3573,7 @@ async def get_approval_status(
     poll without sending a full chat message.
     """
     chat_state = get_chat_state(req.app.state)
-    agent_graph = chat_state.graph_cache.get(agent_id)
-    if agent_graph is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Agent graph for {agent_id!r} is not cached.",
-        )
+    agent_graph = await _ensure_agent_graph(req, agent_id, chat_state)
 
     config = {"configurable": {"thread_id": session_id}}
     try:
@@ -2263,19 +3718,27 @@ async def chat_history(
 
     messages: list[dict] = session.get("messages", [])
     recent = messages[-limit:] if len(messages) > limit else messages
-    # Legacy sessions were persisted before streamed text was normalised
-    # (each token chunk ended with a newline) — clean up on read so the
-    # history view renders properly without rewriting stored data.
-    cleaned: list[dict] = []
-    for msg in recent:
-        if msg.get("role") == "assistant" and isinstance(msg.get("content"), str):
-            msg = dict(msg)
-            msg["content"] = _normalize_assistant_text(msg["content"])
-            reasoning = msg.get("reasoning")
-            if isinstance(reasoning, str):
-                msg["reasoning"] = _normalize_assistant_text(reasoning)
-        cleaned.append(msg)
-    return cleaned
+    # Assistant text is stored verbatim as it was streamed, so it is returned
+    # untouched — rewriting it here (e.g. collapsing single newlines into
+    # spaces) would make history render differently from the live answer.
+    return recent
+
+
+async def _clear_session_runtime(chat_state: Any, session_id: str) -> None:
+    """Drop a session's checkpoint state and stop tracking it for purges.
+
+    Shared by single and batch deletion so a future session with the same
+    id starts clean.
+    """
+    if chat_state.checkpointer is not None:
+        try:
+            await chat_state.checkpointer.adelete_thread(session_id)
+        except Exception:
+            logger.exception(
+                "Failed to delete checkpoint state for session %s", session_id
+            )
+    for threads in chat_state.threads.values():
+        threads.discard(session_id)
 
 
 @router.delete("/sessions/{session_id}")
@@ -2287,18 +3750,214 @@ async def delete_session(session_id: str, req: Request) -> dict[str, str]:
         raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
 
     store.delete_session(session_id)
-
-    # Drop the conversation's checkpoint state so a future session with
-    # the same id starts clean, and stop tracking it for purges.
-    chat_state = get_chat_state(req.app.state)
-    if chat_state.checkpointer is not None:
-        try:
-            await chat_state.checkpointer.adelete_thread(session_id)
-        except Exception:
-            logger.exception(
-                "Failed to delete checkpoint state for session %s", session_id
-            )
-    for threads in chat_state.threads.values():
-        threads.discard(session_id)
+    await _clear_session_runtime(get_chat_state(req.app.state), session_id)
 
     return {"result": "ok", "session_id": session_id}
+
+
+@router.post("/sessions/batch-delete")
+async def batch_delete_sessions(
+    body: BatchDeleteSessionsRequest,
+    req: Request,
+) -> dict[str, Any]:
+    """Delete multiple sessions and their message histories at once.
+
+    Unknown session ids are skipped and reported in ``not_found`` rather
+    than failing the whole request; deduplicated ids are processed once.
+    """
+    store = _get_store(req)
+    chat_state = get_chat_state(req.app.state)
+    ids = list(dict.fromkeys(body.session_ids))
+
+    deleted: list[str] = []
+    not_found: list[str] = []
+    existing = store.load_sessions()
+    for session_id in ids:
+        if session_id in existing:
+            deleted.append(session_id)
+        else:
+            not_found.append(session_id)
+
+    if deleted:
+        store.delete_sessions(deleted)
+        for session_id in deleted:
+            await _clear_session_runtime(chat_state, session_id)
+
+    return {"deleted": deleted, "not_found": not_found}
+
+
+# ---------------------------------------------------------------------------
+# Session trace (LangSmith-style per-step timeline)
+#
+# Every LangGraph super-step writes one checkpoint row plus per-channel
+# writes rows into ``checkpoints.db`` (thread_id == session_id).  The
+# ``metadata`` JSON carries the step sequence number and the ``writes``
+# rows hold the serialized message deltas for that step, so a session's
+# full execution trace (model turns, tool calls, tool results) can be
+# reconstructed read-only without any external tracing service.
+# ---------------------------------------------------------------------------
+
+# Shared serializer for checkpoint/writes blobs (msgpack in this SDK).
+_TRACE_SERDE = JsonPlusSerializer()
+
+
+def _trace_message_to_event(msg: Any) -> dict[str, Any]:
+    """Convert one LangChain message (object or dict) to a trace event."""
+    if isinstance(msg, dict):
+        kind = str(msg.get("type") or msg.get("role") or "unknown")
+        name = msg.get("name") or None
+        content = msg.get("content", "")
+        tool_calls = msg.get("tool_calls") or []
+        tool_call_id = msg.get("tool_call_id")
+        usage = msg.get("usage_metadata")
+    else:
+        kind = str(getattr(msg, "type", "unknown"))
+        name = getattr(msg, "name", None) or None
+        content = getattr(msg, "content", "")
+        tool_calls = getattr(msg, "tool_calls", None) or []
+        tool_call_id = getattr(msg, "tool_call_id", None)
+        usage = getattr(msg, "usage_metadata", None)
+
+    # Content may be a list of typed blocks (text/image) in newer models.
+    if isinstance(content, list):
+        text_blocks = [
+            b.get("text", "") for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        ]
+        content = "\n".join(p for p in text_blocks if p) if text_blocks else ""
+
+    event: dict[str, Any] = {
+        "kind": kind,
+        "name": name,
+        "content": str(content) if content else "",
+    }
+    parsed_calls: list[dict[str, Any]] = []
+    for tc in tool_calls:
+        if not isinstance(tc, dict):
+            continue
+        args = tc.get("args", {})
+        parsed_calls.append({
+            "id": tc.get("id", ""),
+            "name": tc.get("name", ""),
+            "args": args if isinstance(args, dict) else {},
+        })
+    if parsed_calls:
+        event["tool_calls"] = parsed_calls
+    if tool_call_id:
+        event["tool_call_id"] = str(tool_call_id)
+    if isinstance(usage, dict) and usage:
+        event["usage"] = {
+            k: int(v) for k, v in usage.items()
+            if k in ("input_tokens", "output_tokens", "total_tokens")
+            and isinstance(v, (int, float))
+        }
+    return event
+
+
+async def _read_session_trace(session_id: str) -> list[dict[str, Any]]:
+    """Rebuild a session's step timeline from the checkpoints database.
+
+    Returns a list of steps ordered by execution sequence; each step
+    carries its ``metadata.step`` number, ISO timestamp, source and the
+    message events written during that step (model turns, tool calls,
+    tool results).  Reads are read-only — nothing is mutated.
+
+    A missing checkpoint file (fresh data dir) yields an empty timeline.
+    """
+    checkpoint_db = paths.get_checkpoints_path()
+    if not checkpoint_db.is_file():
+        return []
+
+    try:
+        conn = await aiosqlite.connect(str(checkpoint_db))
+    except Exception:
+        logger.exception("Failed to open checkpoints db %s", checkpoint_db)
+        return []
+
+    try:
+        # checkpoint_id -> (step, source, ts)
+        cid_meta: dict[str, tuple[int, str, str | None]] = {}
+        rows = await conn.execute(
+            "SELECT checkpoint_id, type, checkpoint, metadata "
+            "FROM checkpoints WHERE thread_id = ? AND checkpoint_ns = ''",
+            (session_id,),
+        )
+        async for cid, ctype, blob, meta_blob in rows:
+            step: int | None = None
+            source = "loop"
+            ts: str | None = None
+            if isinstance(meta_blob, (bytes, bytearray)):
+                meta_blob = meta_blob.decode("utf-8", errors="replace")
+            if isinstance(meta_blob, str) and meta_blob:
+                try:
+                    meta = json.loads(meta_blob)
+                    step = meta.get("step")
+                    source = meta.get("source", "loop")
+                except Exception:
+                    pass
+            if step is None:
+                continue
+            try:
+                cp = _TRACE_SERDE.loads_typed((str(ctype), blob))
+                if isinstance(cp, dict):
+                    ts = str(cp.get("ts")) if cp.get("ts") else None
+            except Exception:
+                pass
+            cid_meta[cid] = (int(step), str(source), ts)
+
+        # Message-channel writes in insertion order.  rowid mirrors the
+        # order LangGraph appended writes, so it is the safest sort key.
+        rows = await conn.execute(
+            "SELECT checkpoint_id, rowid, channel, type, value "
+            "FROM writes WHERE thread_id = ? AND checkpoint_ns = '' "
+            "AND channel = 'messages' ORDER BY rowid",
+            (session_id,),
+        )
+        steps: dict[int, dict[str, Any]] = {}
+        async for cid, _rowid, _channel, wtype, value in rows:
+            meta = cid_meta.get(cid)
+            if meta is None:
+                continue
+            step, source, ts = meta
+            evs = steps.setdefault(
+                step,
+                {"step": step, "source": source, "ts": ts, "events": []},
+            )
+            try:
+                decoded = _TRACE_SERDE.loads_typed((str(wtype), value))
+            except Exception:
+                logger.debug("trace: undecodable write for %s", cid)
+                continue
+            messages = decoded if isinstance(decoded, list) else [decoded]
+            for m in messages:
+                if m is None:
+                    continue
+                evs["events"].append(_trace_message_to_event(m))
+    except Exception:
+        logger.exception("Failed to read session trace for %s", session_id)
+        return []
+    finally:
+        await conn.close()
+
+    return [steps[s] for s in sorted(steps)]
+
+
+@router.get("/sessions/{session_id}/trace")
+async def get_session_trace(
+    req: Request,
+    session_id: str,
+) -> dict[str, Any]:
+    """Return a LangSmith-style step timeline for a session (read-only).
+
+    The timeline is rebuilt live from the local checkpoints database —
+    no external tracing service involved.  Steps come back ordered by
+    execution sequence with per-step events (model turns, tool calls and
+    their results, usage metadata).
+    """
+    store = _get_store(req)
+    if store.load_session(session_id) is None:
+        raise HTTPException(
+            status_code=404, detail=f"Session {session_id!r} not found"
+        )
+    steps = await _read_session_trace(session_id)
+    return {"session_id": session_id, "steps": steps}

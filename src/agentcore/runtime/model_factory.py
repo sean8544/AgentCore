@@ -87,6 +87,22 @@ def _resolve_api_key(model_cfg: dict[str, Any]) -> str | None:
 
 _model_cache: dict[str, BaseChatModel] = {}
 
+#: Browser User-Agent forced for gateways sitting behind Cloudflare bot
+#: protection (opencode.ai/zen answers 403 "error 1010" to the default
+#: ``Python-urllib`` / httpx client UA).
+_FORCED_USER_AGENT_HOSTS = ("opencode.ai",)
+_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+
+def forced_gateway_headers(base_url: str | None) -> dict[str, str]:
+    """Extra request headers a gateway host requires (may be empty)."""
+    if base_url and any(host in base_url for host in _FORCED_USER_AGENT_HOSTS):
+        return {"User-Agent": _BROWSER_USER_AGENT}
+    return {}
+
 
 def clear_model_cache() -> None:
     """Drop all cached chat-model clients (used by tests and key rotation)."""
@@ -182,6 +198,7 @@ def build_chat_model(model_cfg: dict[str, Any] | str | None) -> BaseChatModel | 
         }
     else:
         headers = {}
+    headers = {**forced_gateway_headers(resolved_base_url), **headers}
     raw_extra_body = model_cfg.get("extra_body")
     extra_body = dict(raw_extra_body) if isinstance(raw_extra_body, dict) else {}
 
@@ -219,6 +236,11 @@ def build_chat_model(model_cfg: dict[str, Any] | str | None) -> BaseChatModel | 
         kwargs["default_headers"] = headers
     if extra_body:
         kwargs["extra_body"] = extra_body
+    # Rate-limited gateways (e.g. OpenCode Zen free models answer 429
+    # ``FreeUsageLimitError``) recover after their window resets — retry
+    # with the SDK's exponential backoff (honouring ``Retry-After``)
+    # instead of surfacing the first throttled response to the user.
+    kwargs["max_retries"] = 5
 
     # DeepSeek endpoints: langchain-openai's ChatOpenAI deliberately ignores
     # DeepSeek's non-standard ``reasoning_content`` streaming delta (thinking

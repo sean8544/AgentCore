@@ -119,6 +119,65 @@ def test_delete_agent(client) -> None:
     assert client.get("/api/agents/gone").status_code == 404
 
 
+def test_delete_agent_full_cleanup(client) -> None:
+    """Deleting an agent removes ALL traces so a restart cannot resurrect it.
+
+    Covers:
+    * workspace directory (``workspace/agent/{id}/``),
+    * runtime data directory (``data/agents/{id}/``),
+    * persisted agent state (``agents.json``),
+    * sessions belonging to the agent in ControlPlaneStore,
+    * agent no longer appears in the list endpoint.
+    """
+    from agentcore.runtime import paths
+
+    agent_id = "cleanup-test"
+    client.post("/api/agents", json={"agent_id": agent_id})
+
+    # Verify the workspace was created.
+    ws_dir = paths.get_agent_workspace_dir(agent_id)
+    data_dir = paths.get_agent_data_dir(agent_id)
+    assert ws_dir.exists()
+
+    # Create some session data to verify cleanup.
+    store = client.app.state.store
+    store.save_session(
+        f"session-of-{agent_id}",
+        {"session_id": f"session-of-{agent_id}", "agent_id": agent_id, "messages": []},
+    )
+    assert f"session-of-{agent_id}" in store.sessions
+
+    # Persisted agent state should exist.
+    assert agent_id in store.agent_states
+
+    # Delete the agent.
+    delete_resp = client.delete(f"/api/agents/{agent_id}")
+    assert delete_resp.status_code == 200
+
+    # 1) Workspace directory removed.
+    assert not ws_dir.exists(), "workspace directory should be removed"
+
+    # 2) Data directory removed.
+    assert not data_dir.exists(), "data directory should be removed"
+
+    # 3) Agent state removed from persistence.
+    assert agent_id not in store.agent_states, "agent state should be removed from store"
+
+    # 4) Sessions belonging to the agent removed.
+    assert f"session-of-{agent_id}" not in store.sessions, "agent sessions should be removed"
+
+    # 5) Agent no longer in list.
+    listed = client.get("/api/agents").json()
+    assert not any(a["agent_id"] == agent_id for a in listed)
+
+    # 6) Simulate restart: create a new AgentRuntime from the same store.
+    #    The deleted agent must NOT reappear.
+    from agentcore.runtime.agent_runtime import AgentRuntime
+
+    new_runtime = AgentRuntime(repository=store)
+    assert new_runtime.get_agent(agent_id) is None, "deleted agent must not resurrect"
+
+
 def test_default_agent_bootstrapped_on_fresh_install(client) -> None:
     """A fresh install auto-creates the Default Agent with bootstrap.md."""
     listed = client.get("/api/agents").json()
@@ -302,3 +361,62 @@ def test_models_endpoint(client) -> None:
         json={"name": "qwen3.6-plus", "base_url": "https://example.invalid/v1"},
     )
     assert test.status_code in (200, 400)
+
+
+# ---------------------------------------------------------------------------
+# _session_has_pending_approval helper + sessions list API
+# ---------------------------------------------------------------------------
+
+
+def test_session_has_pending_approval_helper() -> None:
+    from agentcore.runtime.chat_router import _session_has_pending_approval
+
+    # No messages -> False.
+    assert _session_has_pending_approval({"messages": []}) is False
+
+    # Only user messages -> False.
+    assert _session_has_pending_approval({
+        "messages": [{"role": "user", "content": "hi"}],
+    }) is False
+
+    # Assistant with approval_request but no approval -> True.
+    assert _session_has_pending_approval({
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "approval_request": {"actions": []}},
+        ],
+    }) is True
+
+    # Assistant with approval_request AND approval decision -> False.
+    assert _session_has_pending_approval({
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "approval_request": {"actions": []},
+                "approval": {"decision": "approve"},
+            },
+        ],
+    }) is False
+
+    # Last assistant message has no approval_request -> False.
+    assert _session_has_pending_approval({
+        "messages": [
+            {"role": "assistant", "content": "", "approval_request": {"actions": []}},
+            {"role": "assistant", "content": "done"},
+        ],
+    }) is False
+
+
+def test_sessions_list_includes_pending_approval(client) -> None:
+    """GET /api/chat/sessions should include has_pending_approval per entry."""
+    # Create an agent so sessions can be listed.
+    client.post("/api/agents", json={"agent_id": "sess-demo"})
+    resp = client.get("/api/chat/sessions")
+    assert resp.status_code == 200
+    sessions = resp.json()
+    assert isinstance(sessions, list)
+    # Each entry should carry the new field.
+    for s in sessions:
+        assert "has_pending_approval" in s

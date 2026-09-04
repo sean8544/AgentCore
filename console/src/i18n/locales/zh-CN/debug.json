@@ -1,0 +1,17 @@
+{
+  "desc": "查看后端运行日志，帮助诊断问题。页面打开时日志自动刷新。",
+  "backendTitle": "后端日志",
+  "newestFirst": "最新在前",
+  "autoRefresh": "自动刷新",
+  "levelAll": "全部级别",
+  "searchPlaceholder": "搜索日志内容…",
+  "updatedAt": "更新于",
+  "logPath": "日志文件",
+  "copy": "复制日志",
+  "copied": "日志已复制到剪贴板",
+  "copyFailed": "复制失败",
+  "refreshSuccess": "日志已刷新",
+  "loadFailed": "加载后端日志失败",
+  "notFound": "尚未找到后端日志文件，请确认后端已启动。",
+  "placeholder": "后端日志输出将显示在这里。"
+}

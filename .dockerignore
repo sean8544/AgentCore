@@ -1,0 +1,48 @@
+# AgentCore — .dockerignore
+
+# Node / frontend
+console/node_modules/
+console/dist/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# AgentCore runtime data
+.agentcore/
+logs/
+
+# IDE / editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test / debug
+.pytest_cache/
+.pytest_tmp/
+*.tmp
+*.bak
+coverage/
+htmlcov/
+
+# Git
+.git/
+.github/
+
+# Docs
+docs/
+*.md
+!README.md
+
+# Misc
+*.png
+*.jpg
+*.log

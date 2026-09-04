@@ -67,8 +67,8 @@ class TestSpecRuntimeSecurityHardening:
 
         with patch.dict("os.environ", {}, clear=True):
             import os
-            os.environ.pop("E2B_API_KEY", None)
-            with pytest.raises(SandboxUnavailableError, match="E2B_API_KEY"):
+            os.environ.pop("SANDBOX_ENABLED", None)
+            with pytest.raises(SandboxUnavailableError, match="SANDBOX_ENABLED"):
                 _create_backend({"backend": {"type": "sandbox"}}, workspace_dir=None)
 
 

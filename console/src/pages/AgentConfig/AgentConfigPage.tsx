@@ -1,12 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Button,
-  Card,
-  Divider,
   Empty,
   Form,
   Input,
+  InputNumber,
   List,
   Select,
   Skeleton,
@@ -21,9 +20,11 @@ import {
   ApiOutlined,
   ArrowRightOutlined,
   BranchesOutlined,
+  CloudServerOutlined,
   CloudSyncOutlined,
   DeploymentUnitOutlined,
   InboxOutlined,
+  RollbackOutlined,
   SaveOutlined,
   SendOutlined,
 } from '@ant-design/icons';
@@ -31,8 +32,10 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { apiClient } from '../../api/client';
 import { useI18n } from '../../i18n';
 import { extractErrorMessage, formatDateTime } from '../../utils/helpers';
+import GoogleCard from '../../components/GoogleCard';
+import GooglePageHeader from '../../components/GooglePageHeader';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 /* ───────── Types ───────── */
 
@@ -52,8 +55,23 @@ interface AgentDetail {
     enable_subagents?: boolean;
     inherit_parent_tools?: boolean;
     enable_planning?: boolean;
+    enable_a2ui?: boolean;
     subagent_ids?: string[];
     interrupt_rules?: { tool_name?: string; require_approval?: boolean }[];
+    backend?: {
+      type?: string;
+      provider?: string;
+      image?: string;
+      memory_mb?: number;
+      lifecycle?: {
+        strategy?: string;
+        timeout?: number;
+        idle_timeout?: number;
+        renew_on_chat?: boolean;
+        renew_on_execute?: boolean;
+        max_resume_count?: number;
+      };
+    };
   };
   model?: {
     provider?: string;
@@ -98,6 +116,8 @@ export default function AgentConfigPage() {
   const [modelLibrary, setModelLibrary] = useState<ModelLibraryItem[]>([]);
 
   const [saving, setSaving] = useState(false);
+  /** Last values loaded from the backend — used by the discard button. */
+  const initialValuesRef = useRef<Record<string, unknown>>({});
   const [form] = Form.useForm<{
     description?: string;
     system_prompt?: string;
@@ -108,6 +128,15 @@ export default function AgentConfigPage() {
     model_id?: string;
   }>();
   const enableSubagents = Form.useWatch('enable_subagents', form);
+
+  // ─── Sandbox config state ───
+  const [sandboxEnabled, setSandboxEnabled] = useState(false);
+  const [sandboxProvider, setSandboxProvider] = useState('opensandbox');
+  const [sandboxLifecycle, setSandboxLifecycle] = useState('ephemeral');
+  const [sandboxImage, setSandboxImage] = useState('ghcr.io/agent-infra/sandbox:latest');
+  const [sandboxTimeout, setSandboxTimeout] = useState(600);
+  const [sandboxMemoryMb, setSandboxMemoryMb] = useState(512);
+  const [sandboxSaving, setSandboxSaving] = useState(false);
 
   // ─── Agent list (also used to derive parent → subagent topology) ───
   const fetchAgents = useCallback(async () => {
@@ -151,7 +180,7 @@ export default function AgentConfigPage() {
         const matchedModel = modelLibrary.find(
           (m) => m.name === modelCfg.name && m.base_url === modelCfg.base_url,
         );
-        form.setFieldsValue({
+        initialValuesRef.current = {
           description: settings.description ?? '',
           system_prompt: settings.system_prompt ?? '',
           enable_subagents: Boolean(settings.enable_subagents),
@@ -159,7 +188,19 @@ export default function AgentConfigPage() {
           enable_planning: Boolean(settings.enable_planning),
           subagent_ids: settings.subagent_ids ?? [],
           model_id: matchedModel?.id ?? undefined,
-        });
+        };
+        form.setFieldsValue(initialValuesRef.current);
+
+        // Initialize sandbox state from loaded detail
+        const backend = settings.backend ?? {};
+        const isSandbox = backend.type === 'sandbox';
+        setSandboxEnabled(isSandbox);
+        setSandboxProvider(backend.provider ?? 'opensandbox');
+        setSandboxImage(backend.image ?? 'ghcr.io/agent-infra/sandbox:latest');
+        setSandboxMemoryMb(backend.memory_mb ?? 512);
+        const lc = backend.lifecycle ?? {};
+        setSandboxLifecycle(lc.strategy ?? 'ephemeral');
+        setSandboxTimeout(lc.timeout ?? 600);
       })
       .catch((error) => setDetailError(extractErrorMessage(error)))
       .finally(() => setDetailLoading(false));
@@ -176,7 +217,7 @@ export default function AgentConfigPage() {
   // Keep the URL in sync when the user switches agent in the selector.
   const handleAgentChange = (agentId: string) => {
     setSelectedAgentId(agentId);
-    navigate(`/agent-config/${agentId}`, { replace: true });
+    navigate(`/agents/${agentId}/config`, { replace: true });
   };
 
   const handleSave = async () => {
@@ -207,6 +248,41 @@ export default function AgentConfigPage() {
     }
   };
 
+  const handleRestore = () => {
+    form.setFieldsValue(initialValuesRef.current);
+    message.info(t('agentConfig.restored'));
+  };
+
+  // ─── Sandbox save ───
+  const handleSaveSandbox = async () => {
+    if (!selectedAgentId) return;
+    setSandboxSaving(true);
+    try {
+      const body: Record<string, unknown> = {};
+      if (sandboxEnabled) {
+        body.backend = {
+          type: 'sandbox',
+          provider: sandboxProvider,
+          ...(sandboxImage ? { image: sandboxImage } : {}),
+          ...(sandboxMemoryMb ? { memory_mb: sandboxMemoryMb } : {}),
+          lifecycle: {
+            strategy: sandboxLifecycle,
+            timeout: sandboxTimeout,
+            renew_on_chat: true,
+          },
+        };
+      } else {
+        body.backend = {};
+      }
+      await apiClient.put(`/agents/${selectedAgentId}/settings`, body);
+      message.success(t('agentConfig.saveSuccess'));
+    } catch (error) {
+      message.error(`${t('common.operationFailed')}：${extractErrorMessage(error)}`);
+    } finally {
+      setSandboxSaving(false);
+    }
+  };
+
   // ─── Topology ───
   // Sub-agents this agent can delegate to (only when enable_subagents).
   const subagents = useMemo(() => detail?.subagents ?? [], [detail]);
@@ -219,63 +295,87 @@ export default function AgentConfigPage() {
     [agents, selectedAgentId],
   );
 
+  const agentSelector = (
+    <Select
+      style={{ width: 320 }}
+      placeholder={t('agentConfig.selectAgentPlaceholder')}
+      loading={agentsLoading}
+      showSearch
+      optionFilterProp="label"
+      value={selectedAgentId}
+      onChange={handleAgentChange}
+      options={agents.map((a) => ({
+        value: a.agent_id,
+        label: `${a.agent_id}${a.description ? ` — ${a.description}` : ''}`,
+      }))}
+      notFoundContent={agentsLoading ? <Skeleton active paragraph={{ rows: 1 }} /> : t('agents.noMatching')}
+    />
+  );
+
   return (
-    <div style={{ padding: 24 }}>
-      <Card>
-        <Space align="center" style={{ marginBottom: 4 }}>
-          <DeploymentUnitOutlined style={{ fontSize: 20, color: '#1677ff' }} />
-          <Title level={3} style={{ margin: 0 }}>
-            {t('agentConfig.title')}
-          </Title>
-        </Space>
-        <Text type="secondary">{t('agentConfig.subtitle')}</Text>
+    <div>
+      <GooglePageHeader
+        icon={<DeploymentUnitOutlined />}
+        title={t('agentConfig.title')}
+        subtitle={t('agentConfig.subtitle')}
+        extra={agentSelector}
+      />
 
-        <Divider style={{ margin: '16px 0' }} />
-
-        {/* Agent selector */}
-        <Form layout="inline">
-          <Form.Item label={t('agentConfig.selectAgent')} style={{ marginBottom: 8 }}>
-            <Select
-              style={{ width: 320 }}
-              placeholder={t('agentConfig.selectAgentPlaceholder')}
-              loading={agentsLoading}
-              showSearch
-              optionFilterProp="label"
-              value={selectedAgentId}
-              onChange={handleAgentChange}
-              options={agents.map((a) => ({
-                value: a.agent_id,
-                label: `${a.agent_id}${a.description ? ` — ${a.description}` : ''}`,
-              }))}
-              notFoundContent={agentsLoading ? <Skeleton active paragraph={{ rows: 1 }} /> : t('agents.noMatching')}
-            />
-          </Form.Item>
-        </Form>
-
-        {!selectedAgentId ? (
+      {!selectedAgentId ? (
+        <GoogleCard>
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
             description={t('agentConfig.selectAgentHint')}
             style={{ padding: '32px 0' }}
           />
-        ) : detailLoading ? (
-          <Skeleton active paragraph={{ rows: 6 }} style={{ marginTop: 16 }} />
-        ) : detailError ? (
-          <Alert type="error" showIcon message={t('agents.detailLoadFailed')} description={detailError} style={{ marginTop: 16 }} />
-        ) : (
-          <>
-            <Space align="center" style={{ marginTop: 12, marginBottom: 4 }}>
-              <Text code style={{ fontSize: 14 }}>{selectedAgentId}</Text>
-              {enableSubagents && <Tag color="blue" icon={<BranchesOutlined />}>{t('agentConfig.supervisorTag')}</Tag>}
+        </GoogleCard>
+      ) : detailLoading ? (
+        <GoogleCard>
+          <Skeleton active paragraph={{ rows: 6 }} />
+        </GoogleCard>
+      ) : detailError ? (
+        <Alert type="error" showIcon message={t('agents.detailLoadFailed')} description={detailError} />
+      ) : (
+        <>
+          {/* Identity tags */}
+          <div style={{ marginBottom: 'var(--google-space-6)' }}>
+            <Space size={8} wrap>
+              <Tag
+                icon={<DeploymentUnitOutlined />}
+                style={{
+                  marginInlineEnd: 0,
+                  fontSize: 13,
+                  padding: '4px 10px',
+                  borderRadius: 'var(--google-radius-md)',
+                  borderColor: 'var(--google-border)',
+                  background: 'var(--google-muted)',
+                }}
+              >
+                {selectedAgentId}
+              </Tag>
+              {enableSubagents && (
+                <Tag
+                  color="blue"
+                  icon={<BranchesOutlined />}
+                  style={{ marginInlineEnd: 0, fontSize: 13, padding: '4px 10px' }}
+                >
+                  {t('agentConfig.supervisorTag')}
+                </Tag>
+              )}
               {parentAgents.length > 0 && (
-                <Tag color="purple" icon={<InboxOutlined />}>{t('agentConfig.subagentTag')}</Tag>
+                <Tag
+                  color="purple"
+                  icon={<InboxOutlined />}
+                  style={{ marginInlineEnd: 0, fontSize: 13, padding: '4px 10px' }}
+                >
+                  {t('agentConfig.subagentTag')}
+                </Tag>
               )}
             </Space>
+          </div>
 
-            <Divider titlePlacement="start" style={{ margin: '20px 0 12px' }}>
-              {t('agentConfig.basicSettings')}
-            </Divider>
-
+          {/* Basic settings */}
+          <GoogleCard title={t('agentConfig.basicSettings')} style={{ marginBottom: 'var(--google-space-8)' }}>
             <Form form={form} layout="vertical" style={{ maxWidth: 720 }}>
               <Form.Item label={t('agents.description')} name="description">
                 <Input.TextArea rows={2} showCount maxLength={200} placeholder={t('agents.descriptionPlaceholder')} />
@@ -305,7 +405,14 @@ export default function AgentConfigPage() {
               >
                 <Input.TextArea rows={8} showCount maxLength={8000} placeholder={t('agents.systemPromptPlaceholder')} />
               </Form.Item>
-              <Space size={32} wrap>
+
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                  gap: 'var(--google-space-4) var(--google-space-8)',
+                }}
+              >
                 <Form.Item
                   label={t('agents.enableSubagents')}
                   name="enable_subagents"
@@ -333,7 +440,7 @@ export default function AgentConfigPage() {
                 >
                   <Switch />
                 </Form.Item>
-              </Space>
+              </div>
 
               {/* Subagent selector — only shown when enable_subagents is on */}
               {enableSubagents && (
@@ -358,55 +465,71 @@ export default function AgentConfigPage() {
                 </Form.Item>
               )}
 
-              <Form.Item style={{ marginBottom: 0 }}>
-                <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSave}>
-                  {t('agentConfig.save')}
-                </Button>
+              <Form.Item
+                style={{
+                  marginBottom: 0,
+                  marginTop: 'var(--google-space-4)',
+                  paddingTop: 'var(--google-space-6)',
+                  borderTop: '1px solid var(--google-border)',
+                }}
+              >
+                <Space size={8}>
+                  <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSave}>
+                    {t('agentConfig.save')}
+                  </Button>
+                  <Button icon={<RollbackOutlined />} onClick={handleRestore}>
+                    {t('agentConfig.restore')}
+                  </Button>
+                </Space>
               </Form.Item>
             </Form>
+          </GoogleCard>
 
-            {/* Topology: children + parents */}
-            <Divider titlePlacement="start" style={{ margin: '24px 0 12px' }}>
-              {t('agentConfig.topology')}
-            </Divider>
-
-            <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
-              <div style={{ flex: 1, minWidth: 280 }}>
-                <Text strong style={{ fontSize: 13 }}>
-                  <BranchesOutlined style={{ marginRight: 6, color: '#1677ff' }} />
-                  {t('agentConfig.mySubagents')}
+          {/* Topology */}
+          <GoogleCard title={<Space><BranchesOutlined style={{ color: 'var(--google-primary)' }} /><span>{t('agentConfig.topology')}</span></Space>} style={{ marginBottom: 'var(--google-space-8)' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 'var(--google-space-8)' }}>
+              {/* My subagents */}
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--google-space-3)', marginBottom: 'var(--google-space-4)' }}>
+                  <BranchesOutlined style={{ color: 'var(--google-primary)' }} />
+                  <Text strong style={{ fontSize: 14 }}>{t('agentConfig.mySubagents')}</Text>
                   {!enableSubagents && (
-                    <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
                       ({t('agentConfig.disabledHint')})
                     </Text>
                   )}
-                </Text>
+                </div>
                 {subagents.length === 0 ? (
-                  <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+                  <Text type="secondary" style={{ fontSize: 13 }}>
                     {t('agentConfig.noSubagents')}
                   </Text>
                 ) : (
                   <List
                     size="small"
-                    style={{ marginTop: 8 }}
                     dataSource={subagents}
                     renderItem={(s) => (
                       <List.Item
-                        style={{ padding: '6px 0' }}
+                        style={{
+                          padding: '10px 12px',
+                          borderRadius: 'var(--google-radius-md)',
+                          border: '1px solid var(--google-border)',
+                          marginBottom: 'var(--google-space-3)',
+                          background: 'var(--google-muted)',
+                        }}
                         actions={[
                           <Tooltip key="chat" title={t('agentConfig.goChat')}>
                             <Button
                               type="text"
                               size="small"
-                              icon={<SendOutlined />}
-                              onClick={() => navigate(`/chat/${s.name}`)}
+                              icon={<SendOutlined style={{ color: 'var(--google-primary)' }} />}
+                              onClick={() => navigate(`/agents/${s.name}/chat`)}
                             />
                           </Tooltip>,
                         ]}
                       >
                         <Space direction="vertical" size={0}>
                           <Space size={6}>
-                            <ArrowRightOutlined style={{ color: '#999', fontSize: 12 }} />
+                            <ArrowRightOutlined style={{ color: 'var(--google-muted-foreground)', fontSize: 12 }} />
                             <Text code style={{ fontSize: 13 }}>{s.name}</Text>
                           </Space>
                           {s.description && (
@@ -421,24 +544,32 @@ export default function AgentConfigPage() {
                 )}
               </div>
 
-              <div style={{ flex: 1, minWidth: 280 }}>
-                <Text strong style={{ fontSize: 13 }}>
-                  <ApiOutlined style={{ marginRight: 6, color: '#722ed1' }} />
-                  {t('agentConfig.myParents')}
-                </Text>
+              {/* My parents */}
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--google-space-3)', marginBottom: 'var(--google-space-4)' }}>
+                  <ApiOutlined style={{ color: 'var(--google-chart-2)' }} />
+                  <Text strong style={{ fontSize: 14 }}>{t('agentConfig.myParents')}</Text>
+                </div>
                 {parentAgents.length === 0 ? (
-                  <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+                  <Text type="secondary" style={{ fontSize: 13 }}>
                     {t('agentConfig.noParents')}
                   </Text>
                 ) : (
                   <List
                     size="small"
-                    style={{ marginTop: 8 }}
                     dataSource={parentAgents}
                     renderItem={(p) => (
-                      <List.Item style={{ padding: '6px 0' }}>
+                      <List.Item
+                        style={{
+                          padding: '10px 12px',
+                          borderRadius: 'var(--google-radius-md)',
+                          border: '1px solid var(--google-border)',
+                          marginBottom: 'var(--google-space-3)',
+                          background: 'var(--google-muted)',
+                        }}
+                      >
                         <Space size={6}>
-                          <ArrowRightOutlined style={{ color: '#999', fontSize: 12, transform: 'scaleX(-1)' }} />
+                          <ArrowRightOutlined style={{ color: 'var(--google-muted-foreground)', fontSize: 12, transform: 'scaleX(-1)' }} />
                           <Text code style={{ fontSize: 13 }}>{p.agent_id}</Text>
                           {p.description && (
                             <Text type="secondary" style={{ fontSize: 12 }}>{p.description}</Text>
@@ -450,42 +581,150 @@ export default function AgentConfigPage() {
                 )}
               </div>
             </div>
+          </GoogleCard>
 
-            {/* Delegation records received by this agent */}
-            <Divider titlePlacement="start" style={{ margin: '24px 0 12px' }}>
-              <CloudSyncOutlined style={{ marginRight: 6 }} />
-              {t('agentConfig.delegationRecords')}
-            </Divider>
+          {/* Delegation records */}
+          <GoogleCard title={<Space><CloudSyncOutlined style={{ color: 'var(--google-chart-3)' }} /><span>{t('agentConfig.delegationRecords')}</span></Space>}>
             {delegationsLoading ? (
               <Skeleton active paragraph={{ rows: 2 }} />
             ) : delegations.length === 0 ? (
-              <Text type="secondary" style={{ fontSize: 12 }}>
+              <Text type="secondary" style={{ fontSize: 13 }}>
                 {t('agentConfig.noDelegations')}
               </Text>
             ) : (
               <List
                 size="small"
                 dataSource={[...delegations].reverse()}
-                renderItem={(d, i) => (
-                  <List.Item style={{ padding: '8px 0' }}>
-                    <Space direction="vertical" size={0} style={{ width: '100%' }}>
-                      <Space size={8}>
+                renderItem={(d) => (
+                  <List.Item
+                    style={{
+                      padding: '12px',
+                      borderRadius: 'var(--google-radius-md)',
+                      border: '1px solid var(--google-border)',
+                      marginBottom: 'var(--google-space-3)',
+                      background: 'var(--google-muted)',
+                    }}
+                  >
+                    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                      <Space size={8} wrap>
                         <Tag color="orange" style={{ marginInlineEnd: 0 }}>{t('agentConfig.delegatedFrom')}</Tag>
                         <Text code style={{ fontSize: 13 }}>{d.parent_agent_id ?? '—'}</Text>
                         <Text type="secondary" style={{ fontSize: 12 }}>{formatDateTime(d.timestamp)}</Text>
                       </Space>
                       {d.task_description && (
-                        <Text style={{ fontSize: 13, color: '#555', marginTop: 4 }}>{d.task_description}</Text>
+                        <Text style={{ fontSize: 13, color: 'var(--google-foreground)', marginTop: 4 }}>{d.task_description}</Text>
                       )}
                     </Space>
-                    {i < delegations.length - 1 && <Divider style={{ margin: '4px 0' }} />}
                   </List.Item>
                 )}
               />
             )}
-          </>
-        )}
-      </Card>
+          </GoogleCard>
+
+          {/* Sandbox config */}
+          <GoogleCard
+            title={<Space><CloudServerOutlined style={{ color: 'var(--google-chart-1)' }} /><span>{t('sandbox.title')}</span></Space>}
+            style={{ marginTop: 'var(--google-space-8)' }}
+          >
+            <div style={{ maxWidth: 600 }}>
+              <div style={{ marginBottom: 'var(--google-space-6)' }}>
+                <Space>
+                  <Text strong>{t('sandbox.execEnv')}:</Text>
+                  <Switch
+                    checked={sandboxEnabled}
+                    onChange={(checked) => setSandboxEnabled(checked)}
+                    checkedChildren="Sandbox"
+                    unCheckedChildren="Local"
+                  />
+                </Space>
+              </div>
+
+              {sandboxEnabled && (
+                <>
+                  <div style={{ marginBottom: 'var(--google-space-4)' }}>
+                    <div style={{ marginBottom: 4 }}><Text strong style={{ fontSize: 13 }}>{t('sandbox.provider')}</Text></div>
+                    <Select
+                      value={sandboxProvider}
+                      onChange={setSandboxProvider}
+                      style={{ width: 280 }}
+                      options={[
+                        { value: 'opensandbox', label: 'OpenSandbox' },
+                        { value: 'e2b', label: 'E2B (coming soon)', disabled: true },
+                        { value: 'daytona', label: 'Daytona (coming soon)', disabled: true },
+                      ]}
+                    />
+                  </div>
+
+                  <div style={{ marginBottom: 'var(--google-space-4)' }}>
+                    <div style={{ marginBottom: 4 }}><Text strong style={{ fontSize: 13 }}>{t('sandbox.lifecycle')}</Text></div>
+                    <Select
+                      value={sandboxLifecycle}
+                      onChange={setSandboxLifecycle}
+                      style={{ width: 400 }}
+                      options={[
+                        { value: 'ephemeral', label: `${t('sandbox.ephemeral')} — ${t('sandbox.ephemeralDesc')}` },
+                        { value: 'pause-on-idle', label: `${t('sandbox.pauseOnIdle')} — ${t('sandbox.pauseOnIdleDesc')}` },
+                        { value: 'persistent', label: `${t('sandbox.persistent')} — ${t('sandbox.persistentDesc')}` },
+                      ]}
+                    />
+                  </div>
+
+                  <div style={{ marginBottom: 'var(--google-space-4)' }}>
+                    <div style={{ marginBottom: 4 }}><Text strong style={{ fontSize: 13 }}>{t('sandbox.image')}</Text></div>
+                    <Select
+                      value={sandboxImage}
+                      onChange={setSandboxImage}
+                      style={{ width: 400 }}
+                      options={[
+                        { value: 'ghcr.io/agent-infra/sandbox:latest', label: 'AIO (Browser + Shell + VSCode + Jupyter)' },
+                        { value: 'python:3.12-slim', label: 'Python 3.12 (slim)' },
+                      ]}
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 'var(--google-space-8)', marginBottom: 'var(--google-space-4)' }}>
+                    <div>
+                      <div style={{ marginBottom: 4 }}><Text strong style={{ fontSize: 13 }}>{t('sandbox.timeout')}</Text></div>
+                      <InputNumber
+                        value={sandboxTimeout}
+                        onChange={(v) => setSandboxTimeout(v ?? 600)}
+                        min={60}
+                        style={{ width: 120 }}
+                      />
+                    </div>
+                    <div>
+                      <div style={{ marginBottom: 4 }}><Text strong style={{ fontSize: 13 }}>{t('sandbox.memoryMb')}</Text></div>
+                      <InputNumber
+                        value={sandboxMemoryMb}
+                        onChange={(v) => setSandboxMemoryMb(v ?? 512)}
+                        min={128}
+                        step={128}
+                        style={{ width: 120 }}
+                      />
+                    </div>
+                  </div>
+
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message={t('sandbox.sandboxConfigWarning')}
+                    style={{ marginBottom: 'var(--google-space-4)' }}
+                  />
+
+                  <Button
+                    type="primary"
+                    icon={<SaveOutlined />}
+                    loading={sandboxSaving}
+                    onClick={handleSaveSandbox}
+                  >
+                    {t('agentConfig.save')}
+                  </Button>
+                </>
+              )}
+            </div>
+          </GoogleCard>
+        </>
+      )}
     </div>
   );
 }

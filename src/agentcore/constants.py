@@ -30,6 +30,7 @@ SETTINGS_MENU: tuple[str, ...] = (
     "skill_pool",
     "environment_variables",
     "security",
+    "sandbox_control",
     "token_usage",
     "backup",
     "speech_transcription",

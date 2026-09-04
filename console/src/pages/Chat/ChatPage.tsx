@@ -1,14 +1,18 @@
-import React, { useState, useRef, useEffect, type CSSProperties } from 'react';
-import ReactMarkdown from 'react-markdown';
+import React, { useState, useRef, useEffect, useCallback, type CSSProperties } from 'react';
 import {
   Alert,
   Avatar,
   Button,
   Dropdown,
   Input,
+  Modal,
+  Space,
   Spin,
+  Tag,
   Tooltip,
   Typography,
+  Upload,
+  type UploadProps,
   message as antdMessage,
 } from 'antd';
 import {
@@ -24,26 +28,51 @@ import {
   StopOutlined,
   BulbOutlined,
   DownOutlined,
+  PaperClipOutlined,
+  FileOutlined,
+  CloseOutlined,
+  CloudServerOutlined,
+  InteractionOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { useChatStore, formatTimestamp, type Message, type ApprovalAction } from '../../stores/chatStore';
-import { useAgentId } from '../../stores/agentStore';
+import { useChatStore, formatTimestamp, type Message, type ApprovalAction, type Attachment } from '../../stores/chatStore';
+import { useAgentId, agentPath } from '../../stores/agentStore';
 import { useI18n } from '../../i18n';
+import { apiClient } from '../../api/client';
+import GoogleCard from '../../components/GoogleCard';
+import GooglePageHeader from '../../components/GooglePageHeader';
+import MarkdownView from '../../components/MarkdownView';
+import { toWorkspaceRelPath } from '../../utils/helpers';
 import ChatModelSelector from './components/ChatModelSelector';
 import ToolCallCard from './components/ToolCallCard';
+import A2uiCard from './components/A2uiCard';
 import {
   DelegationBubble,
   DelegationRecordPanel,
   TodoList,
-  TodoPanel,
 } from './components/TodoPlan';
 
 const { TextArea } = Input;
 const { Text } = Typography;
 
 /* ───────── Constants ───────── */
-const ORANGE = '#FF7F16';
+const ORANGE = 'var(--google-chart-3)';
 const MAX_CHARS = 10000;
+/** Per-file size cap for chat attachments (mirrors backend 20 MiB). */
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+/** Compact human-readable file size, e.g. "12.3 KB". */
+function formatFileSize(bytes: number): string {
+  if (!bytes || bytes < 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value >= 100 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+}
 
 /* ───────── Styles ───────── */
 const styles: Record<string, CSSProperties> = {
@@ -51,43 +80,28 @@ const styles: Record<string, CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     height: '100%',
-    margin: '-24px',
-    background: '#fff',
-    borderRadius: 8,
+    background: 'var(--google-background)',
+    borderRadius: 'var(--google-radius-lg)',
     overflow: 'hidden',
-  },
-  header: {
-    padding: '14px 24px',
-    borderBottom: '1px solid #f0f0f0',
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
-    flexShrink: 0,
-  },
-  headerTitle: {
-    margin: 0,
-    fontSize: 16,
-    fontWeight: 600,
-    color: '#1a1a1a',
   },
   messageArea: {
     flex: 1,
     overflowY: 'auto',
-    padding: '24px 24px 8px',
+    padding: 'var(--google-space-8) var(--google-space-8) var(--google-space-4)',
   },
   systemCard: {
     maxWidth: 480,
     marginLeft: 'auto',
-    marginBottom: 20,
-    background: '#f7f7f8',
-    borderRadius: 12,
-    padding: '16px 20px',
-    border: '1px solid #eee',
+    marginBottom: 'var(--google-space-6)',
+    background: 'var(--google-muted)',
+    borderRadius: 'var(--google-radius-lg)',
+    padding: 'var(--google-space-4) var(--google-space-6)',
+    border: '1px solid var(--google-border)',
   },
   msgRow: {
     display: 'flex',
-    gap: 12,
-    marginBottom: 24,
+    gap: 'var(--google-space-4)',
+    marginBottom: 'var(--google-space-8)',
     alignItems: 'flex-start',
   },
   msgBody: {
@@ -97,24 +111,24 @@ const styles: Record<string, CSSProperties> = {
   agentName: {
     fontWeight: 600,
     fontSize: 14,
-    color: '#1a1a1a',
-    marginBottom: 6,
+    color: 'var(--google-foreground)',
+    marginBottom: 'var(--google-space-2)',
   },
   thinkingBlock: {
-    marginBottom: 8,
+    marginBottom: 'var(--google-space-3)',
   },
   thinkingWrapper: {
-    border: '1px solid #e9e4fa',
-    borderRadius: 10,
-    background: 'linear-gradient(135deg, #f7f5ff 0%, #fbfbfe 100%)',
+    border: '1px solid var(--google-border)',
+    borderRadius: 'var(--google-radius-lg)',
+    background: 'var(--google-muted)',
     overflow: 'hidden',
   },
   thinkingHeader: {
     display: 'flex',
     alignItems: 'center',
-    gap: 8,
+    gap: 'var(--google-space-3)',
     width: '100%',
-    padding: '8px 12px',
+    padding: 'var(--google-space-3) var(--google-space-4)',
     cursor: 'pointer',
     background: 'transparent',
     border: 'none',
@@ -127,35 +141,35 @@ const styles: Record<string, CSSProperties> = {
     justifyContent: 'center',
     width: 20,
     height: 20,
-    borderRadius: 6,
-    background: '#ece6fd',
+    borderRadius: 'var(--google-radius-md)',
+    background: 'color-mix(in srgb, var(--google-chart-2) 15%, var(--google-muted))',
     flexShrink: 0,
   },
   thinkingTitle: {
     fontSize: 13,
     fontWeight: 600,
-    color: '#6d5ae0',
+    color: 'var(--google-chart-2)',
     letterSpacing: 0.3,
   },
   thinkingDot: {
     width: 7,
     height: 7,
     borderRadius: '50%',
-    background: '#7c5cf0',
+    background: 'var(--google-chart-2)',
     animation: 'chat-dot-pulse 1.2s ease-in-out infinite',
   },
   thinkingChevron: {
     marginLeft: 'auto',
     fontSize: 11,
-    color: '#b3a9e0',
+    color: 'var(--google-muted-foreground)',
     transition: 'transform 0.2s ease',
   },
   thinkingBody: {
-    padding: '4px 14px 12px',
-    borderTop: '1px dashed #e6e0f8',
+    padding: 'var(--google-space-2) var(--google-space-4) var(--google-space-4)',
+    borderTop: '1px solid var(--google-border)',
     fontSize: 13,
     lineHeight: 1.85,
-    color: '#5b5580',
+    color: 'var(--google-foreground)',
     fontStyle: 'italic',
     whiteSpace: 'pre-wrap',
     wordBreak: 'break-word',
@@ -163,26 +177,26 @@ const styles: Record<string, CSSProperties> = {
   msgContent: {
     fontSize: 14,
     lineHeight: 1.75,
-    color: '#333',
+    color: 'var(--google-foreground)',
     wordBreak: 'break-word' as const,
   },
   msgFooter: {
     display: 'flex',
     alignItems: 'center',
-    gap: 8,
-    marginTop: 6,
+    gap: 'var(--google-space-3)',
+    marginTop: 'var(--google-space-2)',
   },
   inputSection: {
-    padding: '12px 24px 16px',
-    borderTop: '1px solid #f0f0f0',
+    padding: 'var(--google-space-4) var(--google-space-8) var(--google-space-6)',
+    borderTop: '1px solid var(--google-border)',
     flexShrink: 0,
-    background: '#fff',
+    background: 'var(--google-background)',
   },
   textArea: {
     resize: 'none' as const,
-    border: '1px solid #e0e0e0',
-    borderRadius: 10,
-    padding: '10px 14px',
+    border: '1px solid var(--google-input)',
+    borderRadius: 'var(--google-radius-lg)',
+    padding: 'var(--google-space-3) var(--google-space-4)',
     fontSize: 14,
     lineHeight: 1.6,
     boxShadow: 'none',
@@ -191,63 +205,36 @@ const styles: Record<string, CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginTop: 8,
+    marginTop: 'var(--google-space-3)',
   },
   toolLeft: {
     display: 'flex',
     alignItems: 'center',
-    gap: 4,
+    gap: 'var(--google-space-2)',
   },
   toolRight: {
     display: 'flex',
     alignItems: 'center',
-    gap: 10,
+    gap: 'var(--google-space-4)',
   },
 };
 
 /* ───────── Helpers ───────── */
 /* ───────── Markdown Renderer ───────── */
 
-function renderMarkdown(text: string) {
-  return (
-    <ReactMarkdown
-      components={{
-        // Style headings
-        h1: ({ children }) => <div style={{ fontSize: 18, fontWeight: 700, margin: '12px 0 6px', color: '#1a1a1a' }}>{children}</div>,
-        h2: ({ children }) => <div style={{ fontSize: 16, fontWeight: 700, margin: '8px 0 4px', color: '#1a1a1a' }}>{children}</div>,
-        h3: ({ children }) => <div style={{ fontSize: 14, fontWeight: 600, margin: '6px 0 3px', color: '#1a1a1a' }}>{children}</div>,
-        // Style paragraphs
-        p: ({ children }) => <div style={{ margin: '2px 0' }}>{children}</div>,
-        // Style lists
-        ul: ({ children }) => <div style={{ paddingLeft: 16, margin: '2px 0' }}>{children}</div>,
-        ol: ({ children }) => <div style={{ paddingLeft: 16, margin: '2px 0' }}>{children}</div>,
-        li: ({ children }) => <div style={{ margin: '1px 0' }}>{'\u2022 '}{children}</div>,
-        // Style inline code
-        code: ({ children, className }) => {
-          const isBlock = className?.includes('language-');
-          if (isBlock) {
-            return (
-              <pre style={{ background: '#f6f8fa', padding: '12px 16px', borderRadius: 8, overflow: 'auto', fontSize: 13, fontFamily: 'Menlo, Consolas, monospace', margin: '8px 0' }}>
-                <code>{children}</code>
-              </pre>
-            );
-          }
-          return (
-            <code style={{ background: '#f3f3f5', padding: '1px 6px', borderRadius: 4, fontSize: 13, fontFamily: 'Menlo, Consolas, monospace' }}>
-              {children}
-            </code>
-          );
-        },
-        // Style bold
-        strong: ({ children }) => <strong>{children}</strong>,
-        // Style links
-        a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: '#1677ff' }}>{children}</a>,
-        // Style blockquotes
-        blockquote: ({ children }) => <div style={{ borderLeft: '3px solid #ddd', paddingLeft: 12, margin: '6px 0', color: '#666' }}>{children}</div>,
-      }}
-    >
-      {text}
-    </ReactMarkdown>
+/**
+ * Map workspace-file markdown links onto the Files page so clicking a
+ * generated report (e.g. `report.md`) opens the file manager in a new
+ * browser tab with that file revealed and opened.
+ */
+function useFileLinkResolver() {
+  const agentId = useAgentId();
+  return useCallback(
+    (href: string) => {
+      const path = toWorkspaceRelPath(href);
+      return path ? `${agentPath('files', agentId)}?open=${encodeURIComponent(path)}` : null;
+    },
+    [agentId],
   );
 }
 
@@ -292,45 +279,44 @@ function ApprovalCard({
   };
 
   return (
-    <div
+    <GoogleCard
       style={{
-        background: '#fffbe6',
-        border: '1px solid #ffe58f',
-        borderRadius: 12,
-        padding: '14px 18px',
-        marginTop: 8,
-        marginBottom: 8,
+        marginTop: 'var(--google-space-3)',
+        marginBottom: 'var(--google-space-3)',
+      }}
+      bodyStyle={{
+        background: 'var(--google-popover)',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-        <ExclamationCircleOutlined style={{ color: '#faad14', fontSize: 16 }} />
-        <Text strong style={{ fontSize: 14, color: '#ad6800' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--google-space-3)', marginBottom: 'var(--google-space-4)' }}>
+        <ExclamationCircleOutlined style={{ color: 'var(--google-chart-3)', fontSize: 16 }} />
+        <Text strong style={{ fontSize: 14, color: 'var(--google-foreground)' }}>
           {t('chat.approvalNeeded')}
         </Text>
       </div>
 
       {actions.map((action, i) => (
-        <div key={i} style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 13, color: '#555', marginBottom: 4 }}>
+        <div key={i} style={{ marginBottom: 'var(--google-space-4)' }}>
+          <div style={{ fontSize: 13, color: 'var(--google-foreground)', marginBottom: 'var(--google-space-2)' }}>
             <Text code style={{ fontSize: 13 }}>{action.name}</Text>
           </div>
           {action.description && (
-            <div style={{ fontSize: 12, color: '#888', marginBottom: 4, whiteSpace: 'pre-wrap' }}>
+            <div style={{ fontSize: 12, color: 'var(--google-muted-foreground)', marginBottom: 'var(--google-space-2)', whiteSpace: 'pre-wrap' }}>
               {action.description}
             </div>
           )}
           {!editing && (
             <pre
               style={{
-                background: '#fff7e6',
-                padding: '8px 12px',
-                borderRadius: 6,
+                background: 'var(--google-muted)',
+                padding: 'var(--google-space-3) var(--google-space-4)',
+                borderRadius: 'var(--google-radius-md)',
                 fontSize: 12,
-                fontFamily: 'Menlo, Consolas, monospace',
+                fontFamily: 'var(--google-font-mono)',
                 margin: 0,
                 maxHeight: 160,
                 overflow: 'auto',
-                border: '1px solid #ffe58f',
+                border: '1px solid var(--google-border)',
               }}
             >
               {JSON.stringify(action.args, null, 2)}
@@ -340,17 +326,17 @@ function ApprovalCard({
       ))}
 
       {editing && (
-        <div style={{ marginBottom: 10 }}>
+        <div style={{ marginBottom: 'var(--google-space-4)' }}>
           <TextArea
             value={editJson}
             onChange={(e) => setEditJson(e.target.value)}
             autoSize={{ minRows: 3, maxRows: 10 }}
-            style={{ fontFamily: 'Menlo, Consolas, monospace', fontSize: 12 }}
+            style={{ fontFamily: 'var(--google-font-mono)', fontSize: 12 }}
           />
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+      <div style={{ display: 'flex', gap: 'var(--google-space-3)', marginTop: 'var(--google-space-3)' }}>
         {allAllow('approve') && (
           <Button
             type="primary"
@@ -358,7 +344,7 @@ function ApprovalCard({
             icon={<CheckCircleOutlined />}
             onClick={onApprove}
             disabled={disabled || editing}
-            style={{ background: '#52c41a', borderColor: '#52c41a', borderRadius: 6 }}
+            style={{ background: 'var(--google-chart-5)', borderColor: 'var(--google-chart-5)', borderRadius: 'var(--google-radius-md)' }}
           >
             {t('chat.approve')}
           </Button>
@@ -371,7 +357,7 @@ function ApprovalCard({
                 icon={<CheckCircleOutlined />}
                 onClick={submitEdit}
                 disabled={disabled}
-                style={{ borderRadius: 6 }}
+                style={{ borderRadius: 'var(--google-radius-md)' }}
               >
                 {t('chat.confirmEdit')}
               </Button>
@@ -379,7 +365,7 @@ function ApprovalCard({
                 size="small"
                 onClick={() => setEditing(false)}
                 disabled={disabled}
-                style={{ borderRadius: 6 }}
+                style={{ borderRadius: 'var(--google-radius-md)' }}
               >
                 {t('common.cancel')}
               </Button>
@@ -390,7 +376,7 @@ function ApprovalCard({
               icon={<EditOutlined />}
               onClick={startEdit}
               disabled={disabled}
-              style={{ borderRadius: 6 }}
+              style={{ borderRadius: 'var(--google-radius-md)' }}
             >
               {t('chat.approveEdit')}
             </Button>
@@ -402,21 +388,22 @@ function ApprovalCard({
             icon={<CloseCircleOutlined />}
             onClick={onReject}
             disabled={disabled}
-            style={{ borderRadius: 6 }}
+            style={{ borderRadius: 'var(--google-radius-md)' }}
           >
             {t('chat.reject')}
           </Button>
         )}
       </div>
-    </div>
+    </GoogleCard>
   );
 }
 
 function SystemCard({ message }: { message: Message }) {
+  const resolveFileLink = useFileLinkResolver();
   return (
     <div style={styles.systemCard}>
-      <div style={styles.msgContent}>{renderMarkdown(message.content)}</div>
-      <div style={{ ...styles.msgFooter, justifyContent: 'flex-end', marginTop: 10 }}>
+      <div style={styles.msgContent}><MarkdownView text={message.content} resolveFileLink={resolveFileLink} /></div>
+      <div style={{ ...styles.msgFooter, justifyContent: 'flex-end', marginTop: 'var(--google-space-3)' }}>
         <Text type="secondary" style={{ fontSize: 12 }}>
           {message.timestamp}
         </Text>
@@ -427,18 +414,45 @@ function SystemCard({ message }: { message: Message }) {
 
 function AssistantMessage({ message, liveThinking }: { message: Message; liveThinking?: string }) {
   const [copied, setCopied] = useState(false);
-  const [thinkingOpen, setThinkingOpen] = useState(true);
+  // Thinking block: open during streaming, collapsed by default for completed/historical messages.
+  const [thinkingOpen, setThinkingOpen] = useState(!!message.streaming);
+  const prevStreamingRef = useRef(!!message.streaming);
+  // Auto-collapse thinking when streaming ends.
+  useEffect(() => {
+    if (prevStreamingRef.current && !message.streaming) {
+      setThinkingOpen(false);
+    }
+    prevStreamingRef.current = !!message.streaming;
+  }, [message.streaming]);
   const submitApproval = useChatStore((s) => s.submitApproval);
   const isStreaming = useChatStore((s) => s.isStreaming);
+  const sendMessage = useChatStore((s) => s.sendMessage);
   const { t } = useI18n();
   const agentId = useAgentId();
   const navigate = useNavigate();
+  const resolveFileLink = useFileLinkResolver();
 
   const handleCopy = () => {
     navigator.clipboard.writeText(message.content).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
+  };
+
+  // A2UI action loop: user interactions on agent-rendered surfaces are
+  // fed back to the conversation as a new user message so the agent can
+  // continue from the submitted data (transport-agnostic return channel).
+  const handleA2uiAction = (action: {
+    name: string;
+    surfaceId: string;
+    context: Record<string, unknown>;
+  }) => {
+    if (isStreaming) return;
+    // Single-line compact form; UserMessage renders it as a friendly
+    // receipt bubble instead of raw text (see parseA2uiEcho).
+    const contextJson = JSON.stringify(action.context ?? {});
+    const text = `[A2UI ${t('chat.a2uiActionLabel')}] event=${action.name} surface=${action.surfaceId} ${contextJson}`;
+    void sendMessage(text);
   };
 
   const thinking = message.thinking || liveThinking;
@@ -481,7 +495,7 @@ function AssistantMessage({ message, liveThinking }: { message: Message; liveThi
                 aria-expanded={thinkingOpen}
               >
                 <span style={styles.thinkingIconBox}>
-                  <BulbOutlined style={{ color: '#7c5cf0', fontSize: 11 }} />
+                  <BulbOutlined style={{ color: 'var(--google-chart-2)', fontSize: 11 }} />
                 </span>
                 <span style={styles.thinkingTitle}>{t('chat.thinking')}</span>
                 {isLiveThinking && <span style={styles.thinkingDot} />}
@@ -493,7 +507,7 @@ function AssistantMessage({ message, liveThinking }: { message: Message; liveThi
                 <div style={styles.thinkingBody}>
                   {thinking}
                   {isLiveThinking && (
-                    <span style={{ display: 'inline-block', width: 6, height: 13, background: '#7c5cf0', marginLeft: 3, verticalAlign: 'text-bottom', animation: 'chat-cursor-blink 1s steps(1) infinite' }} />
+                    <span style={{ display: 'inline-block', width: 6, height: 13, background: 'var(--google-chart-2)', marginLeft: 3, verticalAlign: 'text-bottom', animation: 'chat-cursor-blink 1s steps(1) infinite' }} />
                   )}
                 </div>
               )}
@@ -501,37 +515,47 @@ function AssistantMessage({ message, liveThinking }: { message: Message; liveThi
           </div>
         )}
 
-        {/* Delegation bubble — clickable to navigate to subagent */}
+        {/* Delegation bubble — collapsible; body has an explicit "open session" button */}
         {message.delegations?.map((d, i) => (
           <DelegationBubble
             key={`del-${i}`}
             delegation={d}
             running={message.streaming}
-            onClick={() => navigate(`/chat/${d.subagent}`)}
+            onOpenSession={() => navigate(`/agents/${d.subagent}/chat`)}
           />
         ))}
 
-        {/* Tool calls — card with collapsible highlighted JSON args */}
+        {/* Tool calls — collapsible badge, click to see JSON args */}
         {message.toolCalls?.map((tc, i) => (
           <ToolCallCard key={`tc-${i}`} call={tc} />
         ))}
 
         {/* Persisted task plan (restored from history) */}
         {message.todos && message.todos.length > 0 && (
-          <div style={{ border: '1px solid #f0f0f0', borderRadius: 12, background: '#fff', padding: '10px 14px', marginTop: 4, marginBottom: 10 }}>
+          <GoogleCard style={{ marginTop: 'var(--google-space-2)', marginBottom: 'var(--google-space-6)', padding: 'var(--google-space-3) var(--google-space-4)' }} bodyStyle={{ padding: 0, background: 'transparent' }}>
             <TodoList todos={message.todos} />
-          </div>
+          </GoogleCard>
         )}
+
+        {/* A2UI interactive surfaces projected by send_a2ui */}
+        {message.a2uiSurfaces?.map((s, i) => (
+          <A2uiCard
+            key={`a2ui-${s.surface_id}-${i}`}
+            payload={s}
+            disabled={isStreaming}
+            onAction={handleA2uiAction}
+          />
+        ))}
 
         {/* Content */}
         {isEmpty ? (
-          <div style={{ ...styles.msgContent, color: '#999', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ ...styles.msgContent, color: 'var(--google-muted-foreground)', display: 'flex', alignItems: 'center', gap: 'var(--google-space-3)' }}>
             <Spin size="small" />
             {t('chat.agentThinking')}
           </div>
         ) : (
           <div style={styles.msgContent}>
-            {renderMarkdown(message.content)}
+            <MarkdownView text={message.content} resolveFileLink={resolveFileLink} />
             {message.streaming && (
               <span style={{ display: 'inline-block', width: 7, height: 14, background: ORANGE, marginLeft: 3, verticalAlign: 'text-bottom', animation: 'chat-cursor-blink 1s steps(1) infinite' }} />
             )}
@@ -550,13 +574,13 @@ function AssistantMessage({ message, liveThinking }: { message: Message; liveThi
         )}
         {/* Approval decision record (restored from history) */}
         {!hasApproval && decision && (
-          <div style={{ marginTop: 6, fontSize: 13, color: '#555' }}>
+          <div style={{ marginTop: 'var(--google-space-2)', fontSize: 13, color: 'var(--google-foreground)' }}>
             {decisionIcon} {decisionLabel}
             {message.approval?.tool_name ? ` · ${message.approval.tool_name}` : ''}
           </div>
         )}
         {message.error && (
-          <Text type="danger" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
+          <Text type="danger" style={{ fontSize: 12, display: 'block', marginTop: 'var(--google-space-2)' }}>
             {'\u26A0\uFE0F'} {t('chat.sendFailed')}
           </Text>
         )}
@@ -565,6 +589,11 @@ function AssistantMessage({ message, liveThinking }: { message: Message; liveThi
         <div style={styles.msgFooter}>
           <Text type="secondary" style={{ fontSize: 12 }}>
             {message.timestamp}
+            {message.tokenUsage && (message.tokenUsage.input_tokens > 0 || message.tokenUsage.output_tokens > 0) && (
+              <span style={{ marginLeft: 12, color: 'var(--google-muted-foreground)' }}>
+                {'\u{1F4CA}'} {t('chat.tokenUsage', { input: message.tokenUsage.input_tokens, output: message.tokenUsage.output_tokens })}
+              </span>
+            )}
           </Text>
           <Tooltip title={copied ? t('chat.copied') : t('chat.copy')}>
             <Button
@@ -572,7 +601,7 @@ function AssistantMessage({ message, liveThinking }: { message: Message; liveThi
               size="small"
               icon={<CopyOutlined style={{ fontSize: 13 }} />}
               onClick={handleCopy}
-              style={{ color: copied ? ORANGE : '#bbb', padding: '0 4px' }}
+              style={{ color: copied ? 'var(--google-primary)' : 'var(--google-muted-foreground)', padding: '0 4px' }}
             />
           </Tooltip>
         </div>
@@ -581,30 +610,157 @@ function AssistantMessage({ message, liveThinking }: { message: Message; liveThi
   );
 }
 
+/* Parsed `[A2UI …] event=… surface=… {json}` action-echo user message. */
+interface A2uiEcho {
+  label: string;
+  event: string;
+  surfaceId: string;
+  context: Record<string, unknown> | null;
+  raw: string;
+}
+
+/**
+ * Recognizes the transport text produced by handleA2uiAction (both the
+ * legacy multi-line and the current single-line form) so history renders
+ * as a friendly receipt instead of raw debug text.
+ */
+function parseA2uiEcho(content: string): A2uiEcho | null {
+  const m = /^\[A2UI ([^\]]+)\] event=(\S+)\s+surface=(\S+)\s*([\s\S]*)$/.exec(content.trim());
+  if (!m) return null;
+  let context: Record<string, unknown> | null = null;
+  try {
+    const parsed: unknown = JSON.parse(m[4]);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      context = parsed as Record<string, unknown>;
+    }
+  } catch {
+    context = null;
+  }
+  return { label: m[1], event: m[2], surfaceId: m[3], context, raw: m[4] };
+}
+
+function formatEchoValue(v: unknown, emptyLabel: string): string {
+  if (Array.isArray(v)) return v.length ? v.map((x) => String(x)).join(', ') : emptyLabel;
+  if (v === null || v === undefined || v === '') return emptyLabel;
+  if (typeof v === 'object') return JSON.stringify(v);
+  return String(v);
+}
+
+/** Friendly receipt bubble replacing the raw `[A2UI …]` echo text. */
+function A2uiEchoBubble({ echo }: { echo: A2uiEcho }) {
+  const { t } = useI18n();
+  const entries = echo.context ? Object.entries(echo.context) : [];
+  const empty = t('chat.a2uiEchoEmpty');
+  return (
+    <div
+      style={{
+        background: 'color-mix(in srgb, var(--google-primary) 8%, var(--google-card))',
+        border: '1px solid color-mix(in srgb, var(--google-primary) 35%, var(--google-border))',
+        color: 'var(--google-foreground)',
+        padding: '8px 14px',
+        borderRadius: 'var(--google-radius-lg) var(--google-radius-lg) 2px var(--google-radius-lg)',
+        maxWidth: '70%',
+        fontSize: 13,
+        lineHeight: 1.6,
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          fontSize: 12,
+          color: 'var(--google-muted-foreground)',
+          marginBottom: entries.length || echo.context === null ? 6 : 0,
+        }}
+      >
+        <InteractionOutlined style={{ color: 'var(--google-primary)', fontSize: 12 }} />
+        <span>
+          {echo.label} · <Text code style={{ fontSize: 11.5 }}>{echo.event}</Text>
+        </span>
+      </div>
+      {echo.context === null ? (
+        <div style={{ whiteSpace: 'pre-wrap', fontSize: 12, color: 'var(--google-muted-foreground)' }}>{echo.raw}</div>
+      ) : (
+        entries.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            {entries.map(([k, v]) => (
+              <div key={k} style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                <span style={{ color: 'var(--google-muted-foreground)', fontSize: 12, flexShrink: 0 }}>{k}</span>
+                <span style={{ fontWeight: 500, wordBreak: 'break-word' }}>{formatEchoValue(v, empty)}</span>
+              </div>
+            ))}
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
 function UserMessage({ message }: { message: Message }) {
+  const resolveFileLink = useFileLinkResolver();
+  const echo = parseA2uiEcho(message.content);
   return (
     <div style={{ ...styles.msgRow, flexDirection: 'row-reverse' }}>
       <Avatar
         size={36}
-        style={{ background: '#1677ff', flexShrink: 0, fontSize: 14 }}
+        style={{ background: 'var(--google-primary)', flexShrink: 0, fontSize: 14 }}
       >
         U
       </Avatar>
       <div style={{ ...styles.msgBody, display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+        {echo ? (
+          <A2uiEchoBubble echo={echo} />
+        ) : (
         <div
           style={{
-            background: '#1677ff',
-            color: '#fff',
-            padding: '10px 16px',
-            borderRadius: '12px 12px 2px 12px',
+            background: 'var(--google-primary)',
+            color: 'var(--google-primary-foreground)',
+            padding: 'var(--google-space-3) var(--google-space-4)',
+            borderRadius: 'var(--google-radius-lg) var(--google-radius-lg) 2px var(--google-radius-lg)',
             fontSize: 14,
             lineHeight: 1.7,
             maxWidth: '70%',
             wordBreak: 'break-word',
           }}
         >
-          {renderMarkdown(message.content)}
+          {message.content ? <MarkdownView text={message.content} resolveFileLink={resolveFileLink} /> : null}
+          {/* Attachment chips — files uploaded alongside this message */}
+          {message.attachments && message.attachments.length > 0 && (
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 6,
+                marginTop: message.content ? 'var(--google-space-2)' : 0,
+              }}
+            >
+              {message.attachments.map((a, i) => (
+                <Tooltip key={`${a.path}-${i}`} title={a.path}>
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4,
+                      background: 'rgba(255, 255, 255, 0.16)',
+                      padding: '2px 8px',
+                      borderRadius: 'var(--google-radius-sm)',
+                      fontSize: 12,
+                      maxWidth: 220,
+                    }}
+                  >
+                    <PaperClipOutlined style={{ fontSize: 11, flexShrink: 0 }} />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {a.name}
+                    </span>
+                    <span style={{ opacity: 0.75, flexShrink: 0 }}>({formatFileSize(a.size)})</span>
+                  </span>
+                </Tooltip>
+              ))}
+            </div>
+          )}
         </div>
+        )}
         <div style={{ ...styles.msgFooter, justifyContent: 'flex-end' }}>
           <Text type="secondary" style={{ fontSize: 12 }}>
             {message.timestamp}
@@ -625,8 +781,6 @@ export default function ChatPage() {
   const error = useChatStore((s) => s.error);
   const thinkingText = useChatStore((s) => s.thinkingText);
   const streamingMsgId = useChatStore((s) => s.streamingMsgId);
-  const todos = useChatStore((s) => s.todos);
-  const tokenUsage = useChatStore((s) => s.tokenUsage);
   const delegationRecords = useChatStore((s) => s.delegationRecords);
   const loadSessions = useChatStore((s) => s.loadSessions);
   const loadDelegations = useChatStore((s) => s.loadDelegations);
@@ -638,6 +792,35 @@ export default function ChatPage() {
   const { t } = useI18n();
 
   const [inputValue, setInputValue] = useState('');
+  /** Files uploaded but not yet sent — attached to the next message. */
+  const [pendingFiles, setPendingFiles] = useState<Attachment[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const inputRef = useRef<any>(null);
+
+  // Session rename state
+  const [renameModalOpen, setRenameModalOpen] = useState(false);
+  const [renameSessionId, setRenameSessionId] = useState<string>('');
+  const [renameTitle, setRenameTitle] = useState('');
+  const renameSession = useChatStore((s) => s.renameSession);
+
+  // Sandbox status indicator
+  const [sandboxStatus, setSandboxStatus] = useState<{ status: string; strategy: string } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const fetchSandbox = async () => {
+      try {
+        const resp = await apiClient.get<{ status: string; strategy: string }>(
+          `/sandbox/sessions/${agentId}`,
+        );
+        if (!cancelled) setSandboxStatus(resp.data);
+      } catch {
+        if (!cancelled) setSandboxStatus(null);
+      }
+    };
+    void fetchSandbox();
+    const timer = window.setInterval(() => void fetchSandbox(), 15000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [agentId]);
   const scrollRef = useRef<HTMLDivElement>(null);
   /** Track whether the user has scrolled up to avoid forced auto-scroll. */
   const userScrolledUpRef = useRef(false);
@@ -676,11 +859,70 @@ export default function ChatPage() {
     return () => el.removeEventListener('scroll', onScroll);
   }, []);
 
+  // Pending attachments belong to the current composition only — drop them
+  // when switching sessions so they never leak into another conversation.
+  useEffect(() => {
+    setPendingFiles([]);
+  }, [currentSessionId]);
+
+  // Auto-focus the input when streaming ends so the user can keep typing.
+  useEffect(() => {
+    if (!isStreaming) {
+      // Delay slightly to let the DOM settle after streaming finishes.
+      const timer = setTimeout(() => inputRef.current?.focus(), 100);
+      return () => clearTimeout(timer);
+    }
+  }, [isStreaming]);
+
+  // Reload sessions after streaming ends so AI-generated titles appear.
+  const prevStreamingRef = useRef(isStreaming);
+  useEffect(() => {
+    if (prevStreamingRef.current && !isStreaming) {
+      // AI title generation takes a few seconds — wait then refresh.
+      const timer = setTimeout(() => { void loadSessions(); }, 5000);
+      return () => clearTimeout(timer);
+    }
+    prevStreamingRef.current = isStreaming;
+  }, [isStreaming, loadSessions]);
+
+  /* ── Chat attachment upload (mirrors QwenPaw /console/upload flow) ── */
+  const uploadProps: UploadProps = {
+    showUploadList: false,
+    multiple: true,
+    disabled: isStreaming,
+    customRequest: async ({ file, onSuccess, onError }) => {
+      const f = file as File;
+      if (f.size > MAX_UPLOAD_BYTES) {
+        antdMessage.error(t('chat.attachTooLarge'));
+        onError?.(new Error('File too large'));
+        return;
+      }
+      const form = new FormData();
+      form.append('file', f);
+      setUploading(true);
+      try {
+        const resp = await apiClient.post('/chat/upload', form, {
+          params: { agent_id: agentId },
+        });
+        const data = resp.data as { name: string; path: string; size: number };
+        setPendingFiles((prev) => [...prev, data]);
+        onSuccess?.({}, new XMLHttpRequest());
+      } catch (err) {
+        antdMessage.error(t('chat.attachUploadFailed'));
+        onError?.(err as Error);
+      } finally {
+        setUploading(false);
+      }
+    },
+  };
+
   const handleSend = () => {
     const content = inputValue.trim();
-    if (!content || isStreaming) return;
+    if ((!content && pendingFiles.length === 0) || isStreaming || uploading) return;
+    const files = pendingFiles;
     setInputValue('');
-    sendMessage(content).then(() => {
+    setPendingFiles([]);
+    sendMessage(content, files.length ? files : undefined).then(() => {
       const latestError = useChatStore.getState().error;
       if (latestError) {
         antdMessage.error(latestError);
@@ -696,18 +938,46 @@ export default function ChatPage() {
     }
   };
 
+  const handleRenameClick = (sessionId: string, currentTitle: string) => {
+    setRenameSessionId(sessionId);
+    setRenameTitle(currentTitle || '');
+    setRenameModalOpen(true);
+  };
+
+  const handleRenameConfirm = async () => {
+    try {
+      await renameSession(renameSessionId, renameTitle);
+      antdMessage.success(t('chat.sessionRenamed') || '会话已重命名');
+      setRenameModalOpen(false);
+    } catch {
+      // Error already handled in store
+    }
+  };
+
   const currentSession = sessions.find((s) => s.session_id === currentSessionId);
   const sessionMenuItems = [
     ...sessions.map((s) => ({
       key: s.session_id,
       label: (
-        <span style={{ fontSize: 13 }}>
-          <MessageOutlined style={{ marginRight: 6, color: s.session_id === currentSessionId ? ORANGE : '#999' }} />
-          {s.session_id === currentSessionId ? t('chat.currentSession') : t('chat.session', { id: s.session_id.slice(0, 8) })}
-          <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
-            {t('chat.sessionCount', { count: s.message_count, time: formatTimestamp(s.updated_at) })}
-          </Text>
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', minWidth: 280 }}>
+          <span style={{ fontSize: 13, flex: 1 }}>
+            <MessageOutlined style={{ marginRight: 6, color: s.session_id === currentSessionId ? 'var(--google-primary)' : 'var(--google-muted-foreground)' }} />
+            {s.title || t('chat.session', { id: s.session_id.slice(0, 8) })}
+            <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+              {t('chat.sessionCount', { count: s.message_count, time: formatTimestamp(s.updated_at) })}
+            </Text>
+          </span>
+          <Button
+            type="text"
+            size="small"
+            icon={<EditOutlined style={{ fontSize: 12 }} />}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleRenameClick(s.session_id, s.title || '');
+            }}
+            style={{ color: 'var(--google-muted-foreground)' }}
+          />
+        </div>
       ),
       onClick: () => void selectSession(s.session_id),
     })),
@@ -716,36 +986,52 @@ export default function ChatPage() {
       : []),
   ];
 
+  const sandboxTag = sandboxStatus ? (
+    <Tooltip title={`Sandbox: ${sandboxStatus.status} (${sandboxStatus.strategy})`}>
+      <Tag
+        color={sandboxStatus.status === 'running' ? 'green' : sandboxStatus.status === 'paused' ? 'gold' : 'default'}
+        icon={<CloudServerOutlined />}
+        style={{ marginInlineEnd: 0, fontSize: 11 }}
+      >
+        {sandboxStatus.status === 'running' ? 'Sandbox' : sandboxStatus.status}
+      </Tag>
+    </Tooltip>
+  ) : null;
+
+  const headerExtra = (
+    <Space>
+      {sandboxTag}
+      <ChatModelSelector />
+      <Dropdown menu={{ items: sessionMenuItems }} trigger={['click']} placement="bottomRight" disabled={isStreaming}>
+        <Button size="small" icon={<MessageOutlined />}
+          style={{ borderRadius: 'var(--google-radius-md)', fontSize: 13 }}>
+          {currentSession ? t('chat.session', { id: currentSession.session_id.slice(0, 8) }) : t('chat.selectSession')}
+        </Button>
+      </Dropdown>
+      <Tooltip title={t('chat.newSession')}>
+        <Button size="small" icon={<PlusOutlined />}
+          onClick={newSession}
+          disabled={isStreaming}
+          style={{ borderRadius: 'var(--google-radius-md)', color: 'var(--google-primary)', borderColor: 'var(--google-primary)' }} />
+      </Tooltip>
+    </Space>
+  );
+
   return (
     <div style={styles.wrapper}>
       {/* Header */}
-      <div style={styles.header}>
-        <RobotOutlined style={{ fontSize: 18, color: ORANGE }} />
-        <h2 style={styles.headerTitle}>{t('chat.greeting')}</h2>
-        <ChatModelSelector />
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Dropdown menu={{ items: sessionMenuItems }} trigger={['click']} placement="bottomRight" disabled={isStreaming}>
-            <Button size="small" icon={<MessageOutlined />}
-              style={{ borderRadius: 8, fontSize: 13 }}>
-              {currentSession ? t('chat.session', { id: currentSession.session_id.slice(0, 8) }) : t('chat.selectSession')}
-            </Button>
-          </Dropdown>
-          <Tooltip title={t('chat.newSession')}>
-            <Button size="small" icon={<PlusOutlined />}
-              onClick={newSession}
-              disabled={isStreaming}
-              style={{ borderRadius: 8, color: ORANGE, borderColor: '#ffd8b3' }} />
-          </Tooltip>
-        </div>
-      </div>
+      <GooglePageHeader
+        icon={<RobotOutlined />}
+        title={currentSession?.title || t('chat.greeting')}
+        extra={headerExtra}
+      />
 
       {/* Messages */}
       <div ref={scrollRef} style={styles.messageArea}>
-        {todos.length > 0 && <TodoPanel todos={todos} />}
         {delegationRecords.length > 0 && <DelegationRecordPanel records={delegationRecords} />}
         {messages.length === 0 && !isStreaming && (
-          <div style={{ textAlign: 'center', padding: '48px 0', color: '#bbb', fontSize: 13 }}>
-            <RobotOutlined style={{ fontSize: 32, color: '#e0e0e0', display: 'block', marginBottom: 12 }} />
+          <div style={{ textAlign: 'center', padding: 'var(--google-space-16) 0', color: 'var(--google-muted-foreground)', fontSize: 13 }}>
+            <RobotOutlined style={{ fontSize: 32, color: 'var(--google-border)', display: 'block', marginBottom: 'var(--google-space-4)' }} />
             {t('chat.sendMessage')}
           </div>
         )}
@@ -768,14 +1054,56 @@ export default function ChatPage() {
             closable
             message={error}
             onClose={clearError}
-            style={{ marginBottom: 16, borderRadius: 8 }}
+            style={{ marginBottom: 'var(--google-space-4)', borderRadius: 'var(--google-radius-md)' }}
           />
         )}
       </div>
 
       {/* Input */}
       <div style={styles.inputSection}>
+        {/* Pending attachments — uploaded, attached to the next message */}
+        {pendingFiles.length > 0 && (
+          <div
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 8,
+              marginBottom: 'var(--google-space-3)',
+            }}
+          >
+            {pendingFiles.map((f, i) => (
+              <span
+                key={`${f.path}-${i}`}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '3px 8px',
+                  background: 'var(--google-muted)',
+                  border: '1px solid var(--google-border)',
+                  borderRadius: 'var(--google-radius-md)',
+                  fontSize: 12,
+                  color: 'var(--google-foreground)',
+                  maxWidth: 260,
+                }}
+              >
+                <FileOutlined style={{ fontSize: 12, color: 'var(--google-muted-foreground)', flexShrink: 0 }} />
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {f.name}
+                </span>
+                <span style={{ color: 'var(--google-muted-foreground)', flexShrink: 0 }}>
+                  {formatFileSize(f.size)}
+                </span>
+                <CloseOutlined
+                  style={{ fontSize: 10, color: 'var(--google-muted-foreground)', cursor: 'pointer', flexShrink: 0 }}
+                  onClick={() => setPendingFiles((prev) => prev.filter((_, idx) => idx !== i))}
+                />
+              </span>
+            ))}
+          </div>
+        )}
         <TextArea
+          ref={inputRef}
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -783,18 +1111,24 @@ export default function ChatPage() {
           autoSize={{ minRows: 1, maxRows: 6 }}
           maxLength={MAX_CHARS}
           disabled={isStreaming}
+          autoFocus
           style={styles.textArea}
           classNames={{ textarea: 'chat-textarea' }}
         />
         <div style={styles.toolBar}>
           <div style={styles.toolLeft}>
-            {tokenUsage && (tokenUsage.input_tokens > 0 || tokenUsage.output_tokens > 0) && (
-              <Text type="secondary" style={{ fontSize: 11 }}>
-                {`\u{1F4CA} ${t('chat.tokenUsage', { input: tokenUsage.input_tokens, output: tokenUsage.output_tokens })}`}
-              </Text>
-            )}
-          </div>
-          <div style={styles.toolRight}>
+            <Upload {...uploadProps}>
+              <Tooltip title={t('chat.attachFile')}>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<PaperClipOutlined style={{ fontSize: 14 }} />}
+                  loading={uploading}
+                  disabled={isStreaming}
+                  style={{ color: 'var(--google-muted-foreground)', minWidth: 32, height: 32 }}
+                />
+              </Tooltip>
+            </Upload>
             <Text type="secondary" style={{ fontSize: 12 }}>
               {inputValue.length}/{MAX_CHARS}
             </Text>
@@ -811,19 +1145,39 @@ export default function ChatPage() {
                   )
                 }
                 onClick={isStreaming ? stopStreaming : handleSend}
-                disabled={!isStreaming && !inputValue.trim()}
+                disabled={!isStreaming && (uploading || (!inputValue.trim() && pendingFiles.length === 0))}
                 style={{
-                  background: isStreaming ? undefined : inputValue.trim() ? ORANGE : '#d9d9d9',
-                  borderColor: isStreaming ? undefined : inputValue.trim() ? ORANGE : '#d9d9d9',
-                  borderRadius: 8,
-                  minWidth: 32,
-                  height: 32,
-                }}
+                background: isStreaming ? undefined : (inputValue.trim() || pendingFiles.length > 0) ? 'var(--google-primary)' : 'var(--google-input)',
+                borderColor: isStreaming ? undefined : (inputValue.trim() || pendingFiles.length > 0) ? 'var(--google-primary)' : 'var(--google-input)',
+                borderRadius: 'var(--google-radius-md)',
+                minWidth: 32,
+                height: 32,
+              }}
               />
             </Tooltip>
           </div>
         </div>
       </div>
+
+      {/* Session Rename Modal */}
+      <Modal
+        title={t('chat.renameSession') || '重命名会话'}
+        open={renameModalOpen}
+        onOk={handleRenameConfirm}
+        onCancel={() => setRenameModalOpen(false)}
+        okText={t('common.confirm') || '确认'}
+        cancelText={t('common.cancel') || '取消'}
+      >
+        <Input
+          value={renameTitle}
+          onChange={(e) => setRenameTitle(e.target.value)}
+          placeholder={t('chat.sessionNamePlaceholder') || '输入会话名称'}
+          maxLength={50}
+          onPressEnter={handleRenameConfirm}
+          autoFocus
+        />
+      </Modal>
+
       <style>{`
         @keyframes chat-cursor-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
         @keyframes chat-dot-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(0.82); } }

@@ -1,10 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react';
 import {
   Alert,
+  AutoComplete,
   Button,
   Checkbox,
   Descriptions,
-  Divider,
   Empty,
   Form,
   Input,
@@ -26,36 +35,39 @@ import type { ColumnsType } from 'antd/es/table';
 import {
   CaretRightOutlined,
   CheckCircleFilled,
+  CloudServerOutlined,
+  ColumnWidthOutlined,
   DeleteOutlined,
+  DeploymentUnitOutlined,
   FileMarkdownOutlined,
   FolderOpenOutlined,
   InboxOutlined,
   InfoCircleOutlined,
   BranchesOutlined,
-  PauseCircleOutlined,
   PlusOutlined,
   PoweroffOutlined,
   ReloadOutlined,
   SearchOutlined,
   StarFilled,
   StarOutlined,
-  StopOutlined,
   SyncOutlined,
-  WarningOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { apiClient } from '../../api/client';
 import { useI18n } from '../../i18n';
 import { useAgentStore } from '../../stores/agentStore';
 import { extractErrorMessage, formatDateTime } from '../../utils/helpers';
+import GoogleCard from '../../components/GoogleCard';
+import GooglePageHeader from '../../components/GooglePageHeader';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-type AgentState = 'idle' | 'running' | 'paused' | 'stopped' | 'error' | string;
+// 后端状态模型只有 idle / busy（请求驱动的派生事实），不再有 running/paused/stopped/error。
+type AgentState = 'idle' | 'busy' | string;
 
 interface AgentInfo {
   agent_id: string;
@@ -64,6 +76,7 @@ interface AgentInfo {
   session_count: number;
   description?: string;
   enable_subagents?: boolean;
+  backend_type?: string;
 }
 
 interface AgentDetail {
@@ -96,6 +109,12 @@ interface CreateAgentFormValues {
   model_name?: string;
   base_url?: string;
   api_key_env?: string;
+  exec_env?: 'local' | 'sandbox';
+  sandbox_provider?: string;
+  sandbox_image?: string;
+  sandbox_lifecycle?: string;
+  sandbox_timeout?: number;
+  sandbox_memory_mb?: number;
 }
 
 interface ModelCatalogItem {
@@ -123,22 +142,17 @@ const getStateMeta = (t: (key: string) => string): Record<
   { color: string; text: string; icon: ReactNode }
 > => ({
   idle: { color: 'geekblue', text: t('agents.stateIdle'), icon: <InboxOutlined /> },
-  running: { color: 'green', text: t('agents.stateRunning'), icon: <SyncOutlined spin /> },
-  paused: { color: 'orange', text: t('agents.statePaused'), icon: <PauseCircleOutlined /> },
-  stopped: { color: 'default', text: t('agents.stateStopped'), icon: <StopOutlined /> },
-  error: { color: 'red', text: t('agents.stateError'), icon: <WarningOutlined /> },
+  busy: { color: 'green', text: t('agents.stateBusy'), icon: <SyncOutlined spin /> },
+  unloaded: { color: 'default', text: t('agents.stateUnloaded'), icon: <InboxOutlined /> },
 });
 
-function StateTag({ state }: { state: AgentState | null }) {
+// 展示态派生：workspace 未装载 → unloaded；否则按后端事实状态显示 busy / idle。
+const deriveDisplayState = (agent: { state: AgentState | null; loaded: boolean }): string =>
+  !agent.loaded ? 'unloaded' : agent.state === 'busy' ? 'busy' : 'idle';
+
+function StateTag({ state }: { state: string }) {
   const { t } = useI18n();
   const STATE_META = getStateMeta(t);
-  if (!state) {
-    return (
-      <Tag icon={<InboxOutlined />} style={{ margin: 0 }}>
-        {t('agents.stateUnloaded')}
-      </Tag>
-    );
-  }
   const meta = STATE_META[state] ?? { color: 'default', text: state, icon: null };
   return (
     <Tag icon={meta.icon} color={meta.color} style={{ margin: 0 }}>
@@ -154,90 +168,199 @@ const getKernelFileLabels = (t: (key: string) => string): Record<string, string>
 });
 
 // ---------------------------------------------------------------------------
+// Resizable columns
+//
+// antd Table 原生不支持列宽拖拽，这里用 pointer 事件手写表头单元格手柄（无第三方依赖）。
+// 宽度由页面 state 持有并落 localStorage，刷新后保留用户习惯。
+// ---------------------------------------------------------------------------
+
+type ColumnKey = 'agent_id' | 'state' | 'backend_type' | 'description' | 'session_count' | 'actions';
+
+type ColumnWidths = Record<ColumnKey, number>;
+
+const COL_WIDTH_STORAGE_KEY = 'agentcore.agents.columnWidths';
+const MIN_COL_WIDTH = 60;
+const MAX_COL_WIDTH = 900;
+// rowSelection 勾选列固定占位，参与 scroll.x 计算
+const SELECTION_COL_WIDTH = 48;
+
+const DEFAULT_COL_WIDTHS: ColumnWidths = {
+  agent_id: 220,
+  state: 140,
+  backend_type: 120,
+  description: 200,
+  session_count: 90,
+  actions: 400,
+};
+
+const clampWidth = (value: number) =>
+  Math.min(MAX_COL_WIDTH, Math.max(MIN_COL_WIDTH, Math.round(value)));
+
+const loadColumnWidths = (): ColumnWidths => {
+  const merged: ColumnWidths = { ...DEFAULT_COL_WIDTHS };
+  try {
+    const raw = window.localStorage.getItem(COL_WIDTH_STORAGE_KEY);
+    if (!raw) return merged;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return merged;
+    Object.entries(parsed as Record<string, unknown>).forEach(([key, value]) => {
+      if (key in merged && typeof value === 'number' && Number.isFinite(value)) {
+        merged[key as ColumnKey] = clampWidth(value);
+      }
+    });
+  } catch {
+    // 存储不可用或数据损坏时退回默认宽度
+  }
+  return merged;
+};
+
+type HeaderCellProps = {
+  width?: number;
+  onResize?: (width: number) => void;
+  children?: ReactNode;
+  className?: string;
+  style?: CSSProperties;
+  colSpan?: number;
+  rowSpan?: number;
+};
+
+// rc-table 的 onHeaderCell 只声明了标准 HTML 属性，自定义 prop 需断言绕过
+const asHeaderCellAttrs = (props: HeaderCellProps) =>
+  props as React.HTMLAttributes<HTMLElement> & React.TdHTMLAttributes<HTMLElement>;
+
+/** 表头单元格：右边缘拖拽手柄调整本列宽度。 */
+function ResizableTitle(props: HeaderCellProps) {
+  const { width, onResize, children, style, ...restProps } = props;
+  const handleRef = useRef<HTMLDivElement | null>(null);
+  const originRef = useRef({ x: 0, width: 0 });
+  const [resizing, setResizing] = useState(false);
+
+  // 无宽度列（勾选列等）不渲染手柄
+  if (!onResize || typeof width !== 'number') {
+    return <th {...restProps} style={style}>{children}</th>;
+  }
+
+  const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    originRef.current = { x: event.clientX, width };
+    setResizing(true);
+    handleRef.current?.setPointerCapture(event.pointerId);
+  };
+
+  const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!resizing) return;
+    onResize(clampWidth(originRef.current.width + (event.clientX - originRef.current.x)));
+  };
+
+  const handlePointerEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!resizing) return;
+    setResizing(false);
+    if (handleRef.current?.hasPointerCapture(event.pointerId)) {
+      handleRef.current.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  return (
+    <th {...restProps} style={{ ...style, position: 'relative' }}>
+      {children}
+      <div
+        ref={handleRef}
+        role="separator"
+        aria-orientation="vertical"
+        className={`col-resize-handle${resizing ? ' is-resizing' : ''}`}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerEnd}
+        onPointerCancel={handlePointerEnd}
+        onClick={(event) => event.stopPropagation()}
+      />
+    </th>
+  );
+}
+
+const TABLE_COMPONENTS = { header: { cell: ResizableTitle } };
+
+// ---------------------------------------------------------------------------
 // Scoped styles — 控制台风格的字体与细节（仅作用于本页）
 // ---------------------------------------------------------------------------
 
 const PAGE_STYLES = `
-@import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
-
-.agents-page {
-  --ink: #16241f;
-  --paper: #f4f6f2;
-  --accent: #0e7a5f;
-  --amber: #d97706;
-  padding: 28px 32px 40px;
-  background:
-    radial-gradient(circle at 12% -10%, rgba(14, 122, 95, 0.08), transparent 42%),
-    radial-gradient(circle at 95% 0%, rgba(217, 119, 6, 0.06), transparent 36%),
-    var(--paper);
-  min-height: 100%;
-  font-feature-settings: 'tnum';
-}
-.agents-page .deck-title {
-  font-family: 'Chakra Petch', 'Segoe UI', sans-serif;
-  letter-spacing: 0.02em;
-  color: var(--ink);
-  margin: 0 !important;
-}
-.agents-page .deck-sub {
-  font-family: 'IBM Plex Mono', 'Cascadia Code', monospace;
-  font-size: 12px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: #5c6b63;
-}
-.agents-page .mono {
-  font-family: 'IBM Plex Mono', 'Cascadia Code', monospace;
-  font-size: 12.5px;
-}
-.agents-page .agent-id-cell {
-  font-family: 'IBM Plex Mono', 'Cascadia Code', monospace;
-  font-weight: 600;
-  font-size: 13px;
-  color: var(--ink);
-}
 .agents-page .ant-table-wrapper .ant-table {
   background: transparent;
 }
+.agents-page .agent-id-cell {
+  font-family: var(--google-font-mono);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--google-foreground);
+}
+/* Agent ID 列：单行截断，完整 ID 由 Tooltip 呈现；星标始终可见 */
+.agents-page .agent-id-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.agents-page .agent-id-main .agent-id-cell {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agents-page .agent-id-main .current-mark {
+  flex: 0 0 auto;
+}
+.agents-page .col-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -5px;
+  bottom: 0;
+  width: 10px;
+  cursor: col-resize;
+  user-select: none;
+  touch-action: none;
+  z-index: 2;
+}
+.agents-page .col-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 22%;
+  bottom: 22%;
+  left: 4px;
+  width: 2px;
+  border-radius: 1px;
+  background: transparent;
+  transition: background var(--google-transition-fast);
+}
+.agents-page .col-resize-handle:hover::after,
+.agents-page .col-resize-handle.is-resizing::after {
+  background: var(--google-primary);
+}
+/* 最后一列的手柄不能探出表格边界，否则被横向滚动容器裁切 */
+.agents-page .ant-table-thead th:last-child .col-resize-handle {
+  right: 0;
+}
+.agents-page .mono {
+  font-family: var(--google-font-mono);
+  font-size: 12.5px;
+}
 .agents-page .ant-table-row.is-current > td {
-  background: rgba(217, 119, 6, 0.055) !important;
+  background: rgba(251, 188, 5, 0.08) !important;
 }
 .agents-page .ant-table-row.is-current > td:first-child {
-  box-shadow: inset 3px 0 0 var(--amber);
-}
-.agents-page .stat-chip {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 10px 18px;
-  border: 1px solid rgba(22, 36, 31, 0.12);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.72);
-  backdrop-filter: blur(2px);
-}
-.agents-page .stat-chip .num {
-  font-family: 'Chakra Petch', sans-serif;
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--ink);
-  line-height: 1;
-}
-.agents-page .stat-chip .lbl {
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: #5c6b63;
+  box-shadow: inset 3px 0 0 var(--google-chart-3);
 }
 .agents-page .current-mark {
-  color: var(--amber);
+  color: var(--google-chart-3);
 }
 .agents-page .detail-path {
-  font-family: 'IBM Plex Mono', monospace;
+  font-family: var(--google-font-mono);
   font-size: 12px;
-  background: rgba(22, 36, 31, 0.06);
-  border: 1px solid rgba(22, 36, 31, 0.1);
-  border-radius: 6px;
+  background: var(--google-muted);
+  border: 1px solid var(--google-border);
+  border-radius: var(--google-radius-md);
   padding: 6px 10px;
   word-break: break-all;
 }
@@ -257,6 +380,35 @@ export default function AgentsPage() {
   // 搜索与筛选
   const [searchText, setSearchText] = useState('');
   const [stateFilter, setStateFilter] = useState<string | undefined>(undefined);
+
+  // 列宽：表头手柄拖拽调整，并持久化到 localStorage
+  const [columnWidths, setColumnWidths] = useState<ColumnWidths>(loadColumnWidths);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(COL_WIDTH_STORAGE_KEY, JSON.stringify(columnWidths));
+    } catch {
+      // 存储不可用时仅影响刷新后的记忆，不影响当前会话
+    }
+  }, [columnWidths]);
+
+  const setColumnWidth = useCallback((key: ColumnKey, width: number) => {
+    setColumnWidths((prev) => (prev[key] === width ? prev : { ...prev, [key]: width }));
+  }, []);
+
+  const headerCell = (key: ColumnKey) =>
+    asHeaderCellAttrs({ width: columnWidths[key], onResize: (width) => setColumnWidth(key, width) });
+
+  // scroll.x：列宽之和 + 勾选列。容器变窄时走横向滚动，而不是挤压 Agent ID 列
+  const tableScrollX = useMemo(
+    () => Object.values(columnWidths).reduce((acc, value) => acc + value, 0) + SELECTION_COL_WIDTH,
+    [columnWidths],
+  );
+
+  const resetColumnWidths = useCallback(() => {
+    setColumnWidths({ ...DEFAULT_COL_WIDTHS });
+    message.success(t('agents.columnWidthsReset'));
+  }, [t]);
 
   // 批量选择
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -279,6 +431,7 @@ export default function AgentsPage() {
   const [createStep, setCreateStep] = useState(0);
   const [form] = Form.useForm<CreateAgentFormValues>();
   const modelMode = Form.useWatch('model_mode', form) ?? 'inherit';
+  const execEnv = Form.useWatch('exec_env', form) ?? 'local';
 
   // 模型目录（GET /api/models，用于创建表单的「选择现有模型」）
   const [modelCatalog, setModelCatalog] = useState<ModelCatalogItem[]>([]);
@@ -390,6 +543,23 @@ export default function AgentsPage() {
       if (values.enable_subagents !== undefined) body.enable_subagents = values.enable_subagents;
       if (values.inherit_parent_tools !== undefined) body.inherit_parent_tools = values.inherit_parent_tools;
 
+      // Sandbox backend config
+      if (values.exec_env === 'sandbox') {
+        const lifecycle: Record<string, unknown> = {
+          strategy: values.sandbox_lifecycle ?? 'ephemeral',
+          timeout: values.sandbox_timeout ?? 600,
+          renew_on_chat: true,
+        };
+        const backend: Record<string, unknown> = {
+          type: 'sandbox',
+          provider: values.sandbox_provider ?? 'opensandbox',
+          lifecycle,
+        };
+        if (values.sandbox_image?.trim()) backend.image = values.sandbox_image.trim();
+        if (values.sandbox_memory_mb) backend.memory_mb = values.sandbox_memory_mb;
+        body.settings = { backend };
+      }
+
       const createdId = values.agent_id.trim();
       await apiClient.post('/agents', body);
       message.success(t('agents.createSuccess', { id: createdId }));
@@ -404,7 +574,7 @@ export default function AgentsPage() {
         okButtonProps: { type: 'primary' },
         onOk: () => {
           useAgentStore.getState().setSelectedAgent(createdId);
-          navigate(`/chat/${createdId}`);
+          navigate(`/agents/${createdId}/chat`);
         },
       });
     } catch (error) {
@@ -435,10 +605,10 @@ export default function AgentsPage() {
   };
 
   const handleStart = (agentId: string) =>
-    runAction(agentId, 'start', () => apiClient.post(`/agents/${agentId}/start`), t('agents.startedSuccess', { id: agentId }));
+    runAction(agentId, 'start', () => apiClient.post(`/agents/${agentId}/start`), t('agents.loadedSuccess', { id: agentId }));
 
   const handleStop = (agentId: string) =>
-    runAction(agentId, 'stop', () => apiClient.post(`/agents/${agentId}/stop`), t('agents.stoppedSuccess', { id: agentId }));
+    runAction(agentId, 'stop', () => apiClient.post(`/agents/${agentId}/stop`), t('agents.unloadedSuccess', { id: agentId }));
 
   const handleReload = (agentId: string) =>
     runAction(agentId, 'reload', () => apiClient.post(`/agents/${agentId}/reload`), t('agents.reloadedSuccess', { id: agentId }));
@@ -530,8 +700,7 @@ export default function AgentsPage() {
         if (!idMatch && !descMatch) return false;
       }
       if (stateFilter !== undefined) {
-        const state = agent.state ?? '__unloaded__';
-        if (state !== stateFilter) return false;
+        if (deriveDisplayState(agent) !== stateFilter) return false;
       }
       return true;
     });
@@ -539,14 +708,11 @@ export default function AgentsPage() {
 
   const stateOptions = useMemo(() => {
     const present = new Set<string>();
-    agents.forEach((agent) => present.add(agent.state ?? '__unloaded__'));
+    agents.forEach((agent) => present.add(deriveDisplayState(agent)));
     const base = [
-      { value: 'running', label: t('agents.stateRunning') },
+      { value: 'busy', label: t('agents.stateBusy') },
       { value: 'idle', label: t('agents.stateIdle') },
-      { value: 'paused', label: t('agents.statePaused') },
-      { value: 'stopped', label: t('agents.stateStopped') },
-      { value: 'error', label: t('agents.stateError') },
-      { value: '__unloaded__', label: t('agents.stateUnloaded') },
+      { value: 'unloaded', label: t('agents.stateUnloaded') },
     ];
     return base.filter((option) => present.has(option.value));
   }, [agents, t]);
@@ -554,9 +720,9 @@ export default function AgentsPage() {
   // 统计 chips
   const stats = useMemo(() => {
     const total = agents.length;
-    const running = agents.filter((a) => a.state === 'running').length;
+    const busy = agents.filter((a) => a.loaded && a.state === 'busy').length;
     const sessions = agents.reduce((acc, a) => acc + (a.session_count || 0), 0);
-    return { total, running, sessions };
+    return { total, busy, sessions };
   }, [agents]);
 
   // --- Table columns ---------------------------------------------------------
@@ -567,24 +733,21 @@ export default function AgentsPage() {
         title: 'Agent ID',
         dataIndex: 'agent_id',
         key: 'agent_id',
+        width: columnWidths.agent_id,
+        onHeaderCell: () => headerCell('agent_id'),
         render: (value: string, record: AgentInfo) => {
           const isCurrent = currentAgentId === record.agent_id;
           return (
-            <Space size={6}>
-              <span className="agent-id-cell">{value}</span>
+            <div className="agent-id-main">
+              <Tooltip title={value}>
+                <span className="agent-id-cell">{value}</span>
+              </Tooltip>
               {isCurrent && (
                 <Tooltip title={t('agents.current')}>
                   <StarFilled className="current-mark" style={{ fontSize: 13 }} />
                 </Tooltip>
               )}
-              {!record.loaded && (
-                <Tooltip title={t('common.workspaceNotLoaded')}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    ({t('agents.stateUnloaded')})
-                  </Text>
-                </Tooltip>
-              )}
-            </Space>
+            </div>
           );
         },
       },
@@ -592,14 +755,45 @@ export default function AgentsPage() {
         title: t('common.status'),
         dataIndex: 'state',
         key: 'state',
-        width: 140,
-        render: (state: AgentState | null) => <StateTag state={state} />,
+        width: columnWidths.state,
+        onHeaderCell: () => headerCell('state'),
+        render: (_: AgentState | null, record: AgentInfo) => (
+          <StateTag state={deriveDisplayState(record)} />
+        ),
+      },
+      {
+        title: t('agents.backendEnv'),
+        dataIndex: 'backend_type',
+        key: 'backend_type',
+        width: columnWidths.backend_type,
+        onHeaderCell: () => headerCell('backend_type'),
+        filters: [
+          { text: t('agents.backendLocal'), value: 'local' },
+          { text: t('agents.backendSandbox'), value: 'sandbox' },
+        ],
+        onFilter: (value: unknown, record: AgentInfo) => {
+          const bt = record.backend_type || 'local';
+          return bt === value;
+        },
+        render: (value: string | undefined) => {
+          const isSandbox = value === 'sandbox';
+          return (
+            <Tag
+              color={isSandbox ? 'green' : 'default'}
+              icon={isSandbox ? <CloudServerOutlined /> : <FolderOpenOutlined />}
+              style={{ fontSize: 12 }}
+            >
+              {isSandbox ? t('agents.backendSandbox') : t('agents.backendLocal')}
+            </Tag>
+          );
+        },
       },
       {
         title: t('agents.descriptionLabel'),
         dataIndex: 'description',
         key: 'description',
-        width: 200,
+        width: columnWidths.description,
+        onHeaderCell: () => headerCell('description'),
         ellipsis: true,
         render: (value: string | undefined, record: AgentInfo) => (
           <Space size={4}>
@@ -620,19 +814,21 @@ export default function AgentsPage() {
         title: t('agents.sessionCount'),
         dataIndex: 'session_count',
         key: 'session_count',
-        width: 90,
+        width: columnWidths.session_count,
+        onHeaderCell: () => headerCell('session_count'),
         render: (value: number) => <span className="mono">{value ?? 0}</span>,
       },
       {
         title: t('common.actions'),
         key: 'actions',
-        width: 400,
+        width: columnWidths.actions,
+        onHeaderCell: () => headerCell('actions'),
         render: (_: unknown, record: AgentInfo) => {
           const busy = busyOf(record.agent_id);
           const anyBusy = busy !== null;
-          const state = record.state;
-          const canStart = state === 'idle' || state === 'stopped' || state === null;
-          const canStop = state === 'running' || state === 'paused';
+          // 启动/停止现在是装载/卸载语义：基于 workspace 是否已装载，而非生命周期状态。
+          const canStart = !record.loaded;
+          const canStop = record.loaded;
           const isCurrent = currentAgentId === record.agent_id;
 
           return (
@@ -641,7 +837,7 @@ export default function AgentsPage() {
                 <Button
                   size="small"
                   type="text"
-                  icon={isCurrent ? <CheckCircleFilled style={{ color: '#d97706' }} /> : <StarOutlined />}
+                  icon={isCurrent ? <CheckCircleFilled style={{ color: 'var(--google-chart-3)' }} /> : <StarOutlined />}
                   disabled={anyBusy || isCurrent}
                   onClick={() => handleSetCurrent(record.agent_id)}
                 >
@@ -656,7 +852,7 @@ export default function AgentsPage() {
               >
                 {t('agents.detail')}
               </Button>
-              <Tooltip title={t('agents.startHint')}>
+              <Tooltip title={t('agents.loadHint')}>
                 <Button
                   size="small"
                   type="link"
@@ -665,7 +861,7 @@ export default function AgentsPage() {
                   loading={busy === 'start'}
                   onClick={() => handleStart(record.agent_id)}
                 >
-                  {t('agents.start')}
+                  {t('agents.load')}
                 </Button>
               </Tooltip>
               <Button
@@ -677,7 +873,7 @@ export default function AgentsPage() {
                 loading={busy === 'stop'}
                 onClick={() => handleStop(record.agent_id)}
               >
-                {t('agents.stop')}
+                {t('agents.unload')}
               </Button>
               <Button
                 size="small"
@@ -714,7 +910,7 @@ export default function AgentsPage() {
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [rowAction, currentAgentId, t],
+    [rowAction, currentAgentId, columnWidths, t],
   );
 
   // --- Render ----------------------------------------------------------------
@@ -725,75 +921,126 @@ export default function AgentsPage() {
     <div className="agents-page">
       <style>{PAGE_STYLES}</style>
 
-      {/* 顶部：标题 + 统计 */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: 16 }}>
-        <div>
-          <div className="deck-sub">{t('agents.subtitle')}</div>
-          <Title level={3} className="deck-title">
-            {t('agents.title')}
-          </Title>
-        </div>
-        <Space size={12} wrap>
-          <span className="stat-chip">
-            <span className="num">{stats.total}</span>
-            <span className="lbl">{t('agents.totalAgents')}</span>
-          </span>
-          <span className="stat-chip">
-            <span className="num" style={{ color: '#0e7a5f' }}>
-              {stats.running}
-            </span>
-            <span className="lbl">{t('agents.runningAgents')}</span>
-          </span>
-          <span className="stat-chip">
-            <span className="num">{stats.sessions}</span>
-            <span className="lbl">{t('agents.totalSessions')}</span>
-          </span>
-        </Space>
-      </div>
+      <GooglePageHeader
+        icon={<DeploymentUnitOutlined />}
+        title={t('agents.title')}
+        subtitle={t('agents.subtitle')}
+        extra={
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
+            {t('agents.createAgent')}
+          </Button>
+        }
+      />
 
-      <Divider style={{ margin: '18px 0 16px' }} />
-
-      {/* 工具栏：搜索 + 筛选 + 批量操作 + 创建 */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
-        <Space wrap>
-          <Input
-            allowClear
-            prefix={<SearchOutlined style={{ color: '#8a998f' }} />}
-            placeholder={t('agents.searchPlaceholder')}
-            style={{ width: 240 }}
-            value={searchText}
-            onChange={(e) => setSearchText(e.target.value)}
-          />
-          <Select
-            placeholder={t('agents.filterByStatus')}
-            allowClear
-            style={{ width: 140 }}
-            value={stateFilter}
-            onChange={(value) => setStateFilter(value)}
-            options={stateOptions}
-          />
-          {selectedIds.length > 0 && (
-            <Popconfirm
-              title={t('agents.batchDelete')}
-              description={t('agents.batchDeleteConfirm', { count: selectedIds.length })}
-              okText={t('common.delete')}
-              okButtonProps={{ danger: true }}
-              cancelText={t('common.cancel')}
-              onConfirm={handleBatchDelete}
+      {/* 统计卡片 */}
+      <GoogleCard style={{ marginBottom: 'var(--google-space-8)' }}>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+            gap: 'var(--google-space-6)',
+          }}
+        >
+          <div>
+            <div
+              style={{
+                fontSize: 'var(--google-text-3xl)',
+                fontWeight: 'var(--google-font-bold)',
+                color: 'var(--google-foreground)',
+                lineHeight: 'var(--google-leading-tight)',
+              }}
             >
-              <Button danger icon={<DeleteOutlined />} loading={batchDeleting}>
-                {t('agents.deleteSelected', { count: selectedIds.length })}
-              </Button>
-            </Popconfirm>
-          )}
-        </Space>
-        <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
-          {t('agents.createAgent')}
-        </Button>
-      </div>
+              {stats.total}
+            </div>
+            <div style={{ fontSize: 'var(--google-text-sm)', color: 'var(--google-muted-foreground)' }}>
+              {t('agents.totalAgents')}
+            </div>
+          </div>
+          <div>
+            <div
+              style={{
+                fontSize: 'var(--google-text-3xl)',
+                fontWeight: 'var(--google-font-bold)',
+                color: 'var(--google-chart-5)',
+                lineHeight: 'var(--google-leading-tight)',
+              }}
+            >
+              {stats.busy}
+            </div>
+            <div style={{ fontSize: 'var(--google-text-sm)', color: 'var(--google-muted-foreground)' }}>
+              {t('agents.busyAgents')}
+            </div>
+          </div>
+          <div>
+            <div
+              style={{
+                fontSize: 'var(--google-text-3xl)',
+                fontWeight: 'var(--google-font-bold)',
+                color: 'var(--google-foreground)',
+                lineHeight: 'var(--google-leading-tight)',
+              }}
+            >
+              {stats.sessions}
+            </div>
+            <div style={{ fontSize: 'var(--google-text-sm)', color: 'var(--google-muted-foreground)' }}>
+              {t('agents.totalSessions')}
+            </div>
+          </div>
+        </div>
+      </GoogleCard>
 
       {/* Agent 列表 */}
-      <Table<AgentInfo>
+      <GoogleCard>
+        {/* 工具栏：搜索 + 筛选 + 批量操作 */}
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            marginBottom: 'var(--google-space-6)',
+            flexWrap: 'wrap',
+            gap: 'var(--google-space-4)',
+          }}
+        >
+          <Space wrap>
+            <Input
+              allowClear
+              prefix={<SearchOutlined style={{ color: 'var(--google-muted-foreground)' }} />}
+              placeholder={t('agents.searchPlaceholder')}
+              style={{ width: 240 }}
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+            />
+            <Select
+              placeholder={t('agents.filterByStatus')}
+              allowClear
+              style={{ width: 140 }}
+              value={stateFilter}
+              onChange={(value) => setStateFilter(value)}
+              options={stateOptions}
+            />
+            {selectedIds.length > 0 && (
+              <Popconfirm
+                title={t('agents.batchDelete')}
+                description={t('agents.batchDeleteConfirm', { count: selectedIds.length })}
+                okText={t('common.delete')}
+                okButtonProps={{ danger: true }}
+                cancelText={t('common.cancel')}
+                onConfirm={handleBatchDelete}
+              >
+                <Button danger icon={<DeleteOutlined />} loading={batchDeleting}>
+                  {t('agents.deleteSelected', { count: selectedIds.length })}
+                </Button>
+              </Popconfirm>
+            )}
+          </Space>
+          <Tooltip title={t('agents.resetColumnWidthsHint')}>
+            <Button size="small" type="text" icon={<ColumnWidthOutlined />} onClick={resetColumnWidths}>
+              {t('agents.resetColumnWidths')}
+            </Button>
+          </Tooltip>
+        </div>
+
+        <Table<AgentInfo>
         columns={columns}
         dataSource={filteredAgents}
         rowKey="agent_id"
@@ -813,8 +1060,12 @@ export default function AgentsPage() {
           ),
         }}
         rowClassName={(record) => (currentAgentId === record.agent_id ? 'is-current' : '')}
+        tableLayout="fixed"
+        scroll={{ x: tableScrollX }}
+        components={TABLE_COMPONENTS}
         locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('agents.noMatching')} /> }}
       />
+      </GoogleCard>
 
       {/* 详情 Modal */}
       <Modal
@@ -845,7 +1096,7 @@ export default function AgentsPage() {
               </Descriptions.Item>
               <Descriptions.Item label={t('common.status')}>
                 <Space size={8}>
-                  <StateTag state={detail.state} />
+                  <StateTag state={deriveDisplayState(detail)} />
                   <Text type="secondary" style={{ fontSize: 12 }}>
                     {detail.loaded ? t('common.workspaceLoaded') : t('common.workspaceNotLoaded')}
                     {detail.initialized === false ? ` · ${t('agents.notInitialized')}` : ''}
@@ -860,11 +1111,11 @@ export default function AgentsPage() {
               </Descriptions.Item>
               <Descriptions.Item label={t('agents.kernelFiles')}>
                 {kernelFiles.length > 0 ? (
-                  <Space size={6} wrap>
+                  <Space size="small" wrap>
                     {kernelFiles.map((name) => (
                       <Tag key={name} icon={<FileMarkdownOutlined />} color="green">
                         {name}
-                        <Text type="secondary" style={{ fontSize: 11, marginLeft: 4 }}>
+                        <Text type="secondary" style={{ fontSize: 11, marginLeft: 'var(--google-space-2)' }}>
                           {KERNEL_FILE_LABELS[name] ?? ''}
                         </Text>
                       </Tag>
@@ -876,28 +1127,28 @@ export default function AgentsPage() {
               </Descriptions.Item>
             </Descriptions>
 
-            <div style={{ marginTop: 14 }}>
+            <div style={{ marginTop: 'var(--google-space-6)' }}>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                <FolderOpenOutlined style={{ marginRight: 6 }} />
+                <FolderOpenOutlined style={{ marginRight: 'var(--google-space-3)' }} />
                 {t('agents.workspaceDir')}
               </Text>
-              <div className="detail-path" style={{ marginTop: 6 }}>
+              <div className="detail-path" style={{ marginTop: 'var(--google-space-3)' }}>
                 {detail.workspace_dir ?? '—'}
               </div>
             </div>
 
             {(detail.settings?.enable_subagents || (detail.subagents ?? []).length > 0) && (
-              <div style={{ marginTop: 14 }}>
+              <div style={{ marginTop: 'var(--google-space-6)' }}>
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  <BranchesOutlined style={{ marginRight: 6 }} />
+                  <BranchesOutlined style={{ marginRight: 'var(--google-space-3)' }} />
                   {t('agentConfig.mySubagents')}
                 </Text>
-                <Space size={6} wrap style={{ marginTop: 6 }}>
+                <Space size="small" wrap style={{ marginTop: 'var(--google-space-3)' }}>
                   {(detail.subagents ?? []).map((s) => (
                     <Tag key={s.name} color="blue" icon={<BranchesOutlined />} style={{ marginInlineEnd: 0 }}>
                       {s.name}
                       {s.description && (
-                        <Text type="secondary" style={{ fontSize: 11, marginLeft: 4 }}>
+                        <Text type="secondary" style={{ fontSize: 11, marginLeft: 'var(--google-space-2)' }}>
                           {s.description}
                         </Text>
                       )}
@@ -949,6 +1200,9 @@ export default function AgentsPage() {
                       if (createStep === 1 && modelMode === 'custom') {
                         await form.validateFields(['provider', 'model_name']);
                       }
+                      if (createStep === 1 && execEnv === 'sandbox') {
+                        await form.validateFields(['sandbox_image']);
+                      }
                       setCreateStep(createStep + 1);
                     } catch {
                       // validation failed — stay on current step
@@ -969,7 +1223,7 @@ export default function AgentsPage() {
         <Steps
           current={createStep}
           size="small"
-          style={{ marginBottom: 24 }}
+          style={{ marginBottom: 'var(--google-space-8)' }}
           items={[
             { title: t('agents.stepBasicInfo') },
             { title: t('agents.stepModelConfig') },
@@ -977,7 +1231,7 @@ export default function AgentsPage() {
           ]}
         />
 
-        <Form form={form} layout="vertical" style={{ marginTop: 8 }}>
+        <Form form={form} layout="vertical" style={{ marginTop: 'var(--google-space-4)' }}>
           {/* ──── Step 0: 基础信息 ──── */}
           <div style={{ display: createStep === 0 ? 'block' : 'none' }}>
             <Form.Item
@@ -1076,6 +1330,77 @@ export default function AgentsPage() {
                 </Form.Item>
               </>
             )}
+
+            {/* ──── 执行环境 ──── */}
+            <div style={{ marginTop: 24, borderTop: '1px solid var(--google-border)', paddingTop: 20 }}>
+              <Form.Item label={t('sandbox.execEnv')} name="exec_env" initialValue="local">
+                <Radio.Group>
+                  <Radio value="local">
+                    <div>
+                      <div style={{ fontWeight: 500 }}>{t('sandbox.localFs')}</div>
+                      <div style={{ fontSize: 12, color: 'var(--google-muted-foreground)' }}>{t('sandbox.localFsDesc')}</div>
+                    </div>
+                  </Radio>
+                  <Radio value="sandbox">
+                    <div>
+                      <div style={{ fontWeight: 500 }}>{t('sandbox.sandboxEnv')}</div>
+                      <div style={{ fontSize: 12, color: 'var(--google-muted-foreground)' }}>{t('sandbox.sandboxEnvDesc')}</div>
+                    </div>
+                  </Radio>
+                </Radio.Group>
+              </Form.Item>
+
+              {execEnv === 'sandbox' && (
+                <div style={{ marginLeft: 24, marginTop: 8 }}>
+                  <Form.Item label={t('sandbox.provider')} name="sandbox_provider" initialValue="opensandbox">
+                    <Select
+                      options={[
+                        { value: 'opensandbox', label: 'OpenSandbox' },
+                        { value: 'e2b', label: 'E2B' },
+                        { value: 'daytona', label: 'Daytona' },
+                      ]}
+                      style={{ width: 200 }}
+                    />
+                  </Form.Item>
+
+                  <Form.Item
+                    label={t('sandbox.image')}
+                    name="sandbox_image"
+                    rules={[{ required: true, message: t('sandbox.imageRequired') }]}
+                  >
+                    <AutoComplete
+                      placeholder={t('sandbox.imagePlaceholder')}
+                      options={[
+                        { value: 'ghcr.io/agent-infra/sandbox:latest', label: 'AIO (Browser + Shell + VSCode + Jupyter)' },
+                        { value: 'python:3.12-slim', label: 'Python 3.12 (slim)' },
+                      ]}
+                      filterOption={(input, option) =>
+                        String(option?.value ?? '').toLowerCase().includes(input.toLowerCase())
+                      }
+                    />
+                  </Form.Item>
+
+                  <Form.Item label={t('sandbox.lifecycle')} name="sandbox_lifecycle" initialValue="ephemeral">
+                    <Select
+                      options={[
+                        { value: 'ephemeral', label: `${t('sandbox.ephemeral')} — ${t('sandbox.ephemeralDesc')}` },
+                        { value: 'pause-on-idle', label: `${t('sandbox.pauseOnIdle')} — ${t('sandbox.pauseOnIdleDesc')}` },
+                        { value: 'persistent', label: `${t('sandbox.persistent')} — ${t('sandbox.persistentDesc')}` },
+                      ]}
+                      style={{ width: 400 }}
+                    />
+                  </Form.Item>
+
+                  <Form.Item label={t('sandbox.timeout')} name="sandbox_timeout" initialValue={600}>
+                    <Input type="number" style={{ width: 120 }} />
+                  </Form.Item>
+
+                  <Form.Item label={t('sandbox.memoryMb')} name="sandbox_memory_mb" initialValue={512}>
+                    <Input type="number" style={{ width: 120 }} />
+                  </Form.Item>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* ──── Step 2: 能力与协作 ──── */}

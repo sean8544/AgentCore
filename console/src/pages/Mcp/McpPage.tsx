@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   Badge,
   Button,
-  Card,
+  Divider,
   Form,
   Input,
   Modal,
@@ -20,19 +20,22 @@ import {
 import {
   ApiOutlined,
   DeleteOutlined,
+  GlobalOutlined,
+  FolderOutlined,
+  SearchOutlined,
   LinkOutlined,
   PlusOutlined,
   ToolOutlined,
+  SettingOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { apiClient } from '../../api/client';
 import { useAgentId } from '../../stores/agentStore';
 import { useI18n } from '../../i18n';
+import GoogleCard from '../../components/GoogleCard';
+import GooglePageHeader from '../../components/GooglePageHeader';
 
 const { Text } = Typography;
-
-/* ───────── Constants ───────── */
-const ORANGE = '#FF7F16';
 
 const TRANSPORT_LABELS: Record<string, { label: string; color: string }> = {
   stdio: { label: 'STDIO', color: 'blue' },
@@ -56,6 +59,23 @@ interface McpTool {
   description?: string;
 }
 
+interface McpPreset {
+  server_id: string;
+  name: string;
+  transport: string;
+  command?: string;
+  url?: string;
+  description?: string;
+  icon?: string;
+  category?: string;
+}
+
+const PRESET_ICONS: Record<string, React.ReactNode> = {
+  browser: <GlobalOutlined />,
+  file: <FolderOutlined />,
+  search: <SearchOutlined />,
+};
+
 export default function McpPage() {
   const { t } = useI18n();
   const agentId = useAgentId();
@@ -69,6 +89,24 @@ export default function McpPage() {
   const [form] = Form.useForm();
   const transport = Form.useWatch('transport', form);
 
+  // Preset state
+  const [presets, setPresets] = useState<McpPreset[]>([]);
+  const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
+
+  /* ── Load presets ── */
+  const loadPresets = useCallback(async () => {
+    try {
+      const res = await apiClient.get(`/agents/${agentId}/mcp/presets`);
+      setPresets(res.data.presets ?? []);
+    } catch {
+      // Presets are optional — silently ignore
+    }
+  }, [agentId]);
+
+  useEffect(() => {
+    void loadPresets();
+  }, [loadPresets]);
+
   /* ── Load servers ── */
   const loadServers = useCallback(async () => {
     setLoading(true);
@@ -81,7 +119,7 @@ export default function McpPage() {
     } finally {
       setLoading(false);
     }
-  }, [agentId]);
+  }, [agentId, t]);
 
   useEffect(() => {
     setToolsCache({});
@@ -94,9 +132,14 @@ export default function McpPage() {
       const values = await form.validateFields();
       setSaving(true);
       await apiClient.post(`/agents/${agentId}/mcp`, values);
-      antdMessage.success(t('mcp.addSuccess', { id: values.server_id }));
+      antdMessage.success(
+        selectedPreset
+          ? t('mcp.presetAdded', { id: values.server_id })
+          : t('mcp.addSuccess', { id: values.server_id }),
+      );
       setAddOpen(false);
       form.resetFields();
+      setSelectedPreset(null);
       void loadServers();
     } catch (err: unknown) {
       if (err && typeof err === 'object' && 'errorFields' in err) return; // validation
@@ -106,7 +149,26 @@ export default function McpPage() {
     } finally {
       setSaving(false);
     }
-  }, [agentId, form, loadServers]);
+  }, [agentId, form, loadServers, t, selectedPreset]);
+
+  /* ── Select preset ── */
+  const selectPreset = useCallback((preset: McpPreset | null) => {
+    if (preset) {
+      setSelectedPreset(preset.server_id);
+      form.setFieldsValue({
+        server_id: preset.server_id,
+        name: preset.name,
+        transport: preset.transport,
+        command: preset.command || '',
+        url: preset.url || '',
+        enabled: true,
+      });
+    } else {
+      setSelectedPreset(null);
+      form.resetFields();
+      form.setFieldsValue({ transport: 'stdio', enabled: true });
+    }
+  }, [form]);
 
   /* ── Toggle enabled ── */
   const toggleServer = useCallback(
@@ -120,7 +182,7 @@ export default function McpPage() {
         antdMessage.error(t('common.operationFailed'));
       }
     },
-    [agentId],
+    [agentId, t],
   );
 
   /* ── Delete ── */
@@ -134,7 +196,7 @@ export default function McpPage() {
         antdMessage.error(t('mcp.deleteFailed'));
       }
     },
-    [agentId, loadServers],
+    [agentId, loadServers, t],
   );
 
   /* ── Test connection ── */
@@ -156,7 +218,7 @@ export default function McpPage() {
         setTesting(null);
       }
     },
-    [agentId],
+    [agentId, t],
   );
 
   /* ── Load tools for expanded row ── */
@@ -176,7 +238,7 @@ export default function McpPage() {
         setToolsLoading(null);
       }
     },
-    [agentId, toolsCache],
+    [agentId, toolsCache, t],
   );
 
   const enabledCount = servers.filter((s) => s.enabled).length;
@@ -189,7 +251,7 @@ export default function McpPage() {
       render: (_: string, record) => (
         <Space direction="vertical" size={0}>
           <Text strong style={{ fontSize: 13 }}>{record.name || record.server_id}</Text>
-          <Text code style={{ fontSize: 11, color: '#999' }}>{record.server_id}</Text>
+          <Text code style={{ fontSize: 11, color: 'var(--google-muted-foreground)' }}>{record.server_id}</Text>
         </Space>
       ),
     },
@@ -257,18 +319,11 @@ export default function McpPage() {
   ];
 
   return (
-    <div style={{ padding: 24 }}>
-      <Card
-        styles={{ body: { padding: 0 } }}
-        title={
-          <Space>
-            <ApiOutlined style={{ color: ORANGE }} />
-            <span>{t('mcp.title')}</span>
-            <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
-              {t('mcp.subtitle', { enabled: enabledCount, total: servers.length })}
-            </Text>
-          </Space>
-        }
+    <div>
+      <GooglePageHeader
+        icon={<ApiOutlined />}
+        title={t('mcp.title')}
+        subtitle={t('mcp.subtitle', { enabled: enabledCount, total: servers.length })}
         extra={
           <Space>
             <Text type="secondary" style={{ fontSize: 12 }}>
@@ -284,7 +339,9 @@ export default function McpPage() {
             </Button>
           </Space>
         }
-      >
+      />
+
+      <GoogleCard bodyStyle={{ padding: 0 }}>
         <Table<McpServer>
           rowKey="server_id"
           size="middle"
@@ -294,8 +351,8 @@ export default function McpPage() {
           pagination={false}
           locale={{
             emptyText: (
-              <Space direction="vertical" size={4} style={{ padding: '16px 0' }}>
-                <ApiOutlined style={{ fontSize: 28, color: '#ddd' }} />
+              <Space direction="vertical" size={4} style={{ padding: 'var(--google-space-8) 0' }}>
+                <ApiOutlined style={{ fontSize: 28, color: 'var(--google-muted-foreground)' }} />
                 <Text type="secondary">{t('mcp.emptyHint')}</Text>
               </Space>
             ),
@@ -304,7 +361,7 @@ export default function McpPage() {
             expandedRowRender: (record) => {
               const tools = toolsCache[record.server_id];
               if (toolsLoading === record.server_id) {
-                return <Spin size="small" style={{ margin: '8px 0' }} />;
+                return <Spin size="small" style={{ margin: 'var(--google-space-3) 0' }} />;
               }
               if (!tools) return null;
               if (!tools.length) {
@@ -315,10 +372,20 @@ export default function McpPage() {
                 );
               }
               return (
-                <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                <Space direction="vertical" size="small" style={{ width: '100%' }}>
                   {tools.map((tool) => (
-                    <Space key={tool.name} align="start" size={8}>
-                      <ToolOutlined style={{ color: ORANGE, marginTop: 4 }} />
+                    <div
+                      key={tool.name}
+                      style={{
+                        display: 'flex',
+                        gap: 'var(--google-space-3)',
+                        padding: 'var(--google-space-3) var(--google-space-4)',
+                        border: '1px solid var(--google-border)',
+                        borderRadius: 'var(--google-radius-md)',
+                        background: 'var(--google-background)',
+                      }}
+                    >
+                      <ToolOutlined style={{ color: 'var(--google-primary)', marginTop: 4 }} />
                       <Space direction="vertical" size={0}>
                         <Text code style={{ fontSize: 12 }}>{tool.name}</Text>
                         {tool.description && (
@@ -327,7 +394,7 @@ export default function McpPage() {
                           </Text>
                         )}
                       </Space>
-                    </Space>
+                    </div>
                   ))}
                 </Space>
               );
@@ -338,18 +405,87 @@ export default function McpPage() {
             },
           }}
         />
-      </Card>
+      </GoogleCard>
 
       <Modal
         title={t('mcp.addModalTitle')}
         open={addOpen}
-        onCancel={() => setAddOpen(false)}
+        onCancel={() => { setAddOpen(false); setSelectedPreset(null); form.resetFields(); }}
         onOk={() => void submitAdd()}
         confirmLoading={saving}
         okText={t('common.add')}
         cancelText={t('common.cancel')}
         destroyOnHidden
+        width={680}
       >
+        {/* ── Preset cards ── */}
+        {presets.length > 0 && (
+          <>
+            <div style={{ marginBottom: 8 }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>{t('mcp.preset')}</Text>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 16 }}>
+              {presets.map((preset) => {
+                const isActive = selectedPreset === preset.server_id;
+                const iconNode = PRESET_ICONS[preset.category || ''] || <ApiOutlined />;
+                return (
+                  <div
+                    key={preset.server_id}
+                    onClick={() => selectPreset(preset)}
+                    style={{
+                      minWidth: 0,
+                      border: `1.5px solid ${isActive ? 'var(--google-primary)' : 'var(--google-border)'}`,
+                      borderRadius: 'var(--google-radius-md)',
+                      padding: 'var(--google-space-4)',
+                      cursor: 'pointer',
+                      background: isActive ? 'var(--google-primary-bg, #f0f7ff)' : 'var(--google-card)',
+                      transition: 'all 0.15s',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                      <Space size={4}>
+                        <span style={{ fontSize: 16 }}>{preset.icon || iconNode}</span>
+                        <Text strong style={{ fontSize: 12 }}>{preset.name}</Text>
+                      </Space>
+                      <Text
+                        type="secondary"
+                        style={{ fontSize: 11, lineHeight: '1.3' }}
+                        ellipsis={{ tooltip: preset.description }}
+                      >
+                        {preset.description}
+                      </Text>
+                    </Space>
+                  </div>
+                );
+              })}
+              {/* Custom option */}
+              <div
+                onClick={() => selectPreset(null)}
+                style={{
+                  border: `1.5px dashed ${selectedPreset === null ? 'var(--google-primary)' : 'var(--google-border)'}`,
+                  borderRadius: 'var(--google-radius-md)',
+                  padding: 'var(--google-space-4)',
+                  cursor: 'pointer',
+                  background: selectedPreset === null ? 'var(--google-primary-bg, #f0f7ff)' : 'var(--google-card)',
+                  transition: 'all 0.15s',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  minHeight: 64,
+                }}
+              >
+                <Space direction="vertical" size={0} align="center">
+                  <SettingOutlined style={{ fontSize: 16, color: 'var(--google-muted-foreground)' }} />
+                  <Text type="secondary" style={{ fontSize: 11 }}>{t('mcp.presetCustom')}</Text>
+                </Space>
+              </div>
+            </div>
+            <Divider style={{ margin: 'var(--google-space-3) 0' }} />
+          </>
+        )}
+
+        {/* ── Server form ── */}
         <Form form={form} layout="vertical" initialValues={{ transport: 'stdio', enabled: true }}>
           <Form.Item
             label={t('mcp.serverId')}
@@ -362,13 +498,14 @@ export default function McpPage() {
               },
             ]}
           >
-            <Input placeholder={t('mcp.serverIdExample')} />
+            <Input placeholder={t('mcp.serverIdExample')} disabled={!!selectedPreset} />
           </Form.Item>
           <Form.Item label={t('mcp.displayName')} name="name">
-            <Input placeholder={t('mcp.displayNameExample')} />
+            <Input placeholder={t('mcp.displayNameExample')} disabled={!!selectedPreset} />
           </Form.Item>
           <Form.Item label={t('mcp.transportType')} name="transport" rules={[{ required: true }]}>
             <Select
+              disabled={!!selectedPreset}
               options={[
                 { value: 'stdio', label: t('mcp.stdioLocal') },
                 { value: 'sse', label: t('mcp.sseHttp') },
@@ -382,7 +519,7 @@ export default function McpPage() {
               name="command"
               rules={[{ required: true, message: t('mcp.startCommandRequired') }]}
             >
-              <Input placeholder={t('mcp.startCommandExample')} />
+              <Input placeholder={t('mcp.startCommandExample')} disabled={!!selectedPreset} />
             </Form.Item>
           ) : (
             <Form.Item
@@ -390,7 +527,7 @@ export default function McpPage() {
               name="url"
               rules={[{ required: true, message: t('mcp.serviceUrlRequired') }]}
             >
-              <Input placeholder={t('mcp.serviceUrlExample')} />
+              <Input placeholder={t('mcp.serviceUrlExample')} disabled={!!selectedPreset} />
             </Form.Item>
           )}
           <Form.Item label={t('mcp.enableLabel')} name="enabled" valuePropName="checked">

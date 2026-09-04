@@ -10,6 +10,8 @@
   "systemPromptExtra": "Takes effect on the next conversation (agent graph is rebuilt)",
   "save": "Save",
   "saveSuccess": "Settings saved; effective on the next conversation",
+  "restore": "Discard changes",
+  "restored": "Restored to the last saved values",
   "supervisorTag": "Supervisor",
   "subagentTag": "Subagent",
   "topology": "Delegation Topology",

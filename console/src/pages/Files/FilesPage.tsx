@@ -1,8 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Button,
+  Dropdown,
   Empty,
   Input,
+  Popconfirm,
+  Segmented,
   Spin,
   Tabs,
   Tag,
@@ -13,7 +17,13 @@ import {
   message as antdMessage,
 } from 'antd';
 import {
+  ArrowDownOutlined,
+  ArrowUpOutlined,
+  CloudServerOutlined,
   ControlOutlined,
+  DeleteOutlined,
+  EditOutlined,
+  EyeOutlined,
   FileMarkdownOutlined,
   FileOutlined,
   FolderFilled,
@@ -22,10 +32,14 @@ import {
   ReloadOutlined,
   RobotOutlined,
   SaveOutlined,
+  SyncOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
 import type { DataNode, EventDataNode } from 'antd/es/tree';
 import type { UploadProps } from 'antd';
+import GoogleCard from '../../components/GoogleCard';
+import GooglePageHeader from '../../components/GooglePageHeader';
+import MarkdownView from '../../components/MarkdownView';
 import { apiClient } from '../../api/client';
 import { useAgentId } from '../../stores/agentStore';
 import { useI18n } from '../../i18n';
@@ -33,7 +47,6 @@ import { useI18n } from '../../i18n';
 const { Text } = Typography;
 
 /* ───────── Constants ───────── */
-const ORANGE = '#FF7F16';
 const KERNEL_FILES = ['agent.md', 'profile.md', 'soul.md', 'bootstrap.md'] as const;
 const KERNEL_LABEL_KEYS: Record<string, string> = {
   'agent.md': 'files.agentIdentity',
@@ -42,12 +55,25 @@ const KERNEL_LABEL_KEYS: Record<string, string> = {
   'bootstrap.md': 'files.bootstrap',
 };
 
+/* Sync badge colours for mirrored workspace files (backend attaches
+   sync_state to tree items inside that root). */
+const SYNC_BADGE: Record<string, { color: string; i18n: string }> = {
+  synced: { color: '#34a853', i18n: 'files.syncStateSynced' },
+  local_modified: { color: '#f9ab00', i18n: 'files.syncStateLocalModified' },
+  remote_modified: { color: '#4285f4', i18n: 'files.syncStateRemoteModified' },
+  remote_only: { color: '#4285f4', i18n: 'files.syncStateRemoteOnly' },
+  local_only: { color: '#9aa0a6', i18n: 'files.syncStateLocalOnly' },
+  conflict: { color: 'var(--google-destructive)', i18n: 'files.syncStateConflict' },
+  mixed: { color: '#f9ab00', i18n: 'files.syncStateMixed' },
+};
+
 /* ───────── Types ───────── */
 interface FileItem {
   name: string;
   path: string;
   is_dir: boolean;
   size?: number | null;
+  sync_state?: string;
 }
 
 interface OpenTab {
@@ -64,19 +90,31 @@ function formatSize(size?: number | null): string {
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function toTreeNodes(items: FileItem[]): DataNode[] {
+function toTreeNodes(
+  items: FileItem[],
+  renderAction?: (item: FileItem) => React.ReactNode,
+  renderBadge?: (item: FileItem) => React.ReactNode,
+): DataNode[] {
   return items.map((item) => ({
     key: item.path,
-    title: item.is_dir ? item.name : (
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-        <span>{item.name}</span>
+    title: item.is_dir ? (
+      <span className="files-tree-dir">
+        {renderBadge?.(item)}
+        <span className="files-tree-name">{item.name}</span>
+        {renderAction?.(item)}
+      </span>
+    ) : (
+      <span className="files-tree-file">
+        {renderBadge?.(item)}
+        <span className="files-tree-name">{item.name}</span>
         {item.size != null && (
-          <Text type="secondary" style={{ fontSize: 11 }}>{formatSize(item.size)}</Text>
+          <Text className="files-tree-size">{formatSize(item.size)}</Text>
         )}
+        {renderAction?.(item)}
       </span>
     ),
     isLeaf: !item.is_dir,
-    icon: item.is_dir ? undefined : <FileOutlined style={{ color: '#999' }} />,
+    icon: item.is_dir ? undefined : <FileOutlined style={{ color: 'var(--google-muted-foreground)' }} />,
   }));
 }
 
@@ -96,9 +134,40 @@ export default function FilesPage() {
   const [originals, setOriginals] = useState<Record<string, string>>({});
   const [fileLoading, setFileLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  /** Per-tab editor view mode; markdown files default to rendered preview. */
+  const [viewModes, setViewModes] = useState<Record<string, 'edit' | 'preview'>>({});
+
+  /* Deep link: /files/:agentId?open=<workspace-rel-path> opens that file. */
+  const [searchParams] = useSearchParams();
+  const openParam = searchParams.get('open');
+  const revealedRef = useRef(false);
 
   const contentsRef = useRef(contents);
   contentsRef.current = contents;
+
+  /* Stable tree-node builder; the delete action renderer is wired through a
+     ref to avoid a reloadTree ↔ deleteEntry dependency cycle. */
+  const renderTreeActionRef = useRef<(item: FileItem) => React.ReactNode>(() => null);
+  /* Sync badge shown before mirrored workspace file names. */
+  const renderSyncBadge = useCallback(
+    (item: FileItem) => {
+      const state = item.sync_state;
+      if (!state) return null;
+      const meta = SYNC_BADGE[state];
+      if (!meta) return null;
+      return (
+        <Tooltip title={t(meta.i18n)}>
+          <span className="files-sync-dot" style={{ background: meta.color }} />
+        </Tooltip>
+      );
+    },
+    [t],
+  );
+  const toNodes = useCallback(
+    (items: FileItem[]) =>
+      toTreeNodes(items, (item) => renderTreeActionRef.current(item), renderSyncBadge),
+    [renderSyncBadge],
+  );
 
   /* ── Load directory listing ── */
   const loadDir = useCallback(
@@ -113,14 +182,63 @@ export default function FilesPage() {
     setTreeLoading(true);
     try {
       const items = await loadDir('');
-      setTreeData(toTreeNodes(items));
+      setTreeData(toNodes(items));
       setRootNames(items.map((i) => i.name));
     } catch {
       setTreeData([]);
     } finally {
       setTreeLoading(false);
     }
-  }, [loadDir]);
+  }, [loadDir, toNodes]);
+
+  /* ── Sandbox sync ── */
+  interface SyncStatusData {
+    enabled: boolean;
+    container_alive?: boolean;
+    container_root?: string;
+    last_sync_at?: string | null;
+    states?: Record<string, string>;
+    summary?: { synced: number; pending_push: number; pending_pull: number; conflict: number };
+  }
+  const [syncStatus, setSyncStatus] = useState<SyncStatusData | null>(null);
+  const [syncing, setSyncing] = useState(false);
+
+  const loadSyncStatus = useCallback(async () => {
+    try {
+      const res = await apiClient.get(`/agents/${agentId}/files/sync/status`);
+      setSyncStatus((res.data as SyncStatusData)?.enabled ? (res.data as SyncStatusData) : null);
+    } catch {
+      setSyncStatus(null);
+    }
+  }, [agentId]);
+
+  const runSync = useCallback(
+    async (direction: 'push' | 'pull' | 'both') => {
+      setSyncing(true);
+      try {
+        const res = await apiClient.post(`/agents/${agentId}/files/sync`, { direction });
+        const r = res.data ?? {};
+        const parts: string[] = [];
+        if ((r.pushed ?? []).length) parts.push(t('files.syncPushedCount', { count: r.pushed.length }));
+        if ((r.pulled ?? []).length) parts.push(t('files.syncPulledCount', { count: r.pulled.length }));
+        if ((r.conflicts ?? []).length) parts.push(t('files.syncConflictsCount', { count: r.conflicts.length }));
+        if ((r.errors ?? []).length) {
+          antdMessage.warning(t('files.syncErrorsCount', { count: r.errors.length }));
+        }
+        antdMessage.success(
+          parts.length ? t('files.syncDone', { detail: parts.join(' · ') }) : t('files.syncNothing'),
+        );
+        void reloadTree();
+        void loadSyncStatus();
+      } catch (err) {
+        const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+        antdMessage.error(detail || t('files.syncFailed'));
+      } finally {
+        setSyncing(false);
+      }
+    },
+    [agentId, reloadTree, loadSyncStatus, t],
+  );
 
   /* Reset everything when switching agents. */
   useEffect(() => {
@@ -130,8 +248,11 @@ export default function FilesPage() {
     setOriginals({});
     setExpandedKeys([]);
     setRootNames([]);
+    setViewModes({});
+    revealedRef.current = false;
     void reloadTree();
-  }, [agentId, reloadTree]);
+    void loadSyncStatus();
+  }, [agentId, reloadTree, loadSyncStatus]);
 
   /* ── Lazy-load subdirectories ── */
   const onLoadData = useCallback(
@@ -139,12 +260,12 @@ export default function FilesPage() {
       if (node.children?.length) return;
       try {
         const items = await loadDir(String(node.key));
-        setTreeData((origin) => updateTreeChildren(origin, String(node.key), toTreeNodes(items)));
+        setTreeData((origin) => updateTreeChildren(origin, String(node.key), toNodes(items)));
       } catch {
         antdMessage.error(t('files.loadFailed'));
       }
     },
-    [loadDir],
+    [loadDir, toNodes],
   );
 
   /* ── Open a file in the editor ── */
@@ -182,6 +303,37 @@ export default function FilesPage() {
     },
     [agentId, contents, tabs, reloadTree],
   );
+
+  /* ── Deep link: expand ancestors and open the ?open= target file ── */
+  const revealFile = useCallback(
+    async (rawPath: string) => {
+      const path = rawPath.replace(/\\/g, '/').replace(/^\/+/, '').replace(/^\.\//, '');
+      if (!path) return;
+      const segments = path.split('/');
+      const ancestors: string[] = [];
+      for (let i = 1; i < segments.length; i++) ancestors.push(segments.slice(0, i).join('/'));
+      for (const dir of ancestors) {
+        try {
+          const items = await loadDir(dir);
+          setTreeData((origin) => updateTreeChildren(origin, dir, toNodes(items)));
+        } catch {
+          /* ancestor missing — openFile below will surface the error */
+        }
+      }
+      if (ancestors.length) {
+        setExpandedKeys((prev) => Array.from(new Set([...prev, ...ancestors])));
+      }
+      const name = segments[segments.length - 1];
+      void openFile(path, name, (KERNEL_FILES as readonly string[]).includes(path));
+    },
+    [loadDir, openFile, toNodes],
+  );
+
+  useEffect(() => {
+    if (!openParam || treeLoading || revealedRef.current) return;
+    revealedRef.current = true;
+    void revealFile(openParam);
+  }, [openParam, treeLoading, revealFile]);
 
   const onTreeSelect = useCallback(
     (_keys: React.Key[], info: { node: EventDataNode<DataNode> }) => {
@@ -226,6 +378,58 @@ export default function FilesPage() {
       }
     },
     [activeKey, agentId, originals, tabs],
+  );
+
+  /* ── Delete a workspace file or directory ── */
+  const deleteEntry = useCallback(
+    async (path: string, isDir: boolean) => {
+      const name = path.split('/').pop() ?? path;
+      try {
+        await apiClient.delete(`/agents/${agentId}/files`, {
+          params: { path, ...(isDir ? { recursive: true } : {}) },
+        });
+        antdMessage.success(t('common.deletedSuccess', { name }));
+        // Close tabs covered by the deletion (the file itself, or anything
+        // inside a recursively removed directory).
+        const covered = (p: string) => p === path || (isDir && p.startsWith(`${path}/`));
+        setTabs((prev) => prev.filter((tab) => !covered(tab.path)));
+        setActiveKey((prev) => (covered(prev) ? '' : prev));
+        // Refresh the parent listing so the node disappears from the tree.
+        const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+        if (!parent) {
+          const items = await loadDir('');
+          setTreeData(toNodes(items));
+          setRootNames(items.map((i) => i.name));
+        } else {
+          try {
+            const items = await loadDir(parent);
+            setTreeData((origin) => updateTreeChildren(origin, parent, toNodes(items)));
+          } catch {
+            const items = await loadDir('');
+            setTreeData(toNodes(items));
+          }
+        }
+      } catch {
+        antdMessage.error(t('common.deleteFailed'));
+      }
+    },
+    [agentId, loadDir, toNodes, t],
+  );
+
+  /* Hover-revealed delete action rendered inside tree node titles. */
+  renderTreeActionRef.current = (item: FileItem) => (
+    <Popconfirm
+      title={t('files.delete')}
+      description={t(item.is_dir ? 'files.deleteDirConfirm' : 'files.deleteFileConfirm', { name: item.name })}
+      okText={t('common.delete')}
+      cancelText={t('common.cancel')}
+      okButtonProps={{ danger: true }}
+      onConfirm={() => void deleteEntry(item.path, item.is_dir)}
+    >
+      <span className="files-tree-del" onClick={(e) => e.stopPropagation()}>
+        <DeleteOutlined />
+      </span>
+    </Popconfirm>
   );
 
   const handleEditorKeyDown = useCallback(
@@ -286,6 +490,9 @@ export default function FilesPage() {
   /* ── Render ── */
   const dirty = activeKey !== '' && contents[activeKey] !== originals[activeKey];
   const activeIsKernel = (KERNEL_FILES as readonly string[]).includes(activeKey);
+  const isMarkdown = (name: string) => name.toLowerCase().endsWith('.md');
+  const modeFor = (tab: OpenTab): 'edit' | 'preview' =>
+    viewModes[tab.path] ?? (isMarkdown(tab.name) ? 'preview' : 'edit');
   /* Kernel files that actually exist on disk; before the first listing loads,
      show them all (tolerate missing listing). */
   const visibleKernelFiles = rootNames.length
@@ -293,227 +500,325 @@ export default function FilesPage() {
     : KERNEL_FILES;
 
   return (
-    <div style={{
-      display: 'flex', height: '100%', margin: -24, background: '#fff',
-      borderRadius: 8, overflow: 'hidden',
-    }}>
-      {/* ── Left: file navigator ── */}
-      <div style={{
-        width: 280, flexShrink: 0, borderRight: '1px solid #f0f0f0',
-        display: 'flex', flexDirection: 'column', background: '#fafafa',
-      }}>
-        {/* Header */}
-        <div style={{ padding: '14px 16px 10px', borderBottom: '1px solid #f0f0f0' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-            <RobotOutlined style={{ color: ORANGE }} />
-            <Text strong style={{ fontSize: 13 }}>{t('files.title')}</Text>
-            <Text code style={{ fontSize: 11, marginLeft: 'auto' }}>{agentId}</Text>
-          </div>
-        </div>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <GooglePageHeader
+        icon={<RobotOutlined />}
+        title={t('files.title')}
+        extra={
+          <Text code style={{ fontSize: 11 }}>
+            {agentId}
+          </Text>
+        }
+      />
 
-        <div style={{ flex: 1, overflowY: 'auto', padding: '12px 12px 24px' }}>
-          {/* Kernel files */}
+      <GoogleCard
+        bodyStyle={{ padding: 0, flex: 1, display: 'flex', flexDirection: 'column' }}
+        style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
+      >
+        <div style={{
+          display: 'flex', flex: 1, minHeight: 0,
+          background: 'var(--google-card)',
+          borderRadius: 'var(--google-radius-lg)', overflow: 'hidden',
+        }}>
+          {/* ── Left: file navigator ── */}
           <div style={{
-            fontSize: 12, fontWeight: 600, color: '#8c8c8c', letterSpacing: 0.5,
-            margin: '4px 4px 8px',
+            width: 280, flexShrink: 0, borderRight: '1px solid var(--google-border)',
+            display: 'flex', flexDirection: 'column', background: 'var(--google-muted)',
           }}>
-            {t('files.kernelFiles')}
-          </div>
-          {visibleKernelFiles.map((name) => {
-            const active = activeKey === name;
-            return (
-              <div
-                key={name}
-                onClick={() => void openFile(name, name, true)}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 8,
-                  padding: '6px 10px', borderRadius: 8, cursor: 'pointer',
-                  marginBottom: 2, fontSize: 13,
-                  background: active ? '#fff3e8' : 'transparent',
-                  color: active ? ORANGE : '#333',
-                  border: active ? `1px solid #ffd8b3` : '1px solid transparent',
-                }}
-              >
-                <ControlOutlined style={{ color: active ? ORANGE : '#faad14' }} />
-                <span style={{ fontWeight: active ? 600 : 400 }}>{name}</span>
-                <Text type="secondary" style={{ fontSize: 11, marginLeft: 'auto' }}>
-                  {t(KERNEL_LABEL_KEYS[name] ?? '')}
-                </Text>
+            <div style={{ flex: 1, overflowY: 'auto', padding: 'var(--google-space-4) var(--google-space-4) var(--google-space-8)' }}>
+              {/* Kernel files */}
+              <div style={{
+                fontSize: 12, fontWeight: 600, color: 'var(--google-muted-foreground)', letterSpacing: 0.5,
+                margin: 'var(--google-space-1) var(--google-space-1) var(--google-space-3)',
+              }}>
+                {t('files.kernelFiles')}
               </div>
-            );
-          })}
-
-          {/* Workspace files */}
-          <div style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            margin: '18px 4px 8px',
-          }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: '#8c8c8c', letterSpacing: 0.5 }}>
-              {t('files.workspaceFiles')}
-            </span>
-            <span style={{ display: 'flex', gap: 2 }}>
-              <Upload {...uploadProps}>
-                <Tooltip title={t('files.uploadTo', { dir: uploadDir || t('files.rootDir') })}>
-                  <Button type="text" size="small" icon={<UploadOutlined style={{ fontSize: 13 }} />}
-                    style={{ color: '#8c8c8c' }} />
-                </Tooltip>
-              </Upload>
-              <Tooltip title={t('common.refresh')}>
-                <Button type="text" size="small" icon={<ReloadOutlined style={{ fontSize: 13 }} />}
-                  onClick={() => void reloadTree()} style={{ color: '#8c8c8c' }} />
-              </Tooltip>
-            </span>
-          </div>
-          {treeLoading ? (
-            <div style={{ textAlign: 'center', padding: 24 }}><Spin size="small" /></div>
-          ) : treeData.length === 0 ? (
-            <Text type="secondary" style={{ fontSize: 12, padding: '0 4px' }}>
-              {t('files.workspaceEmpty')}
-            </Text>
-          ) : (
-            <Tree
-              showIcon
-              blockNode
-              selectable
-              treeData={treeData}
-              loadData={onLoadData}
-              onSelect={onTreeSelect}
-              expandedKeys={expandedKeys}
-              onExpand={(keys) => setExpandedKeys(keys)}
-              selectedKeys={activeTab && !activeTab.isKernel ? [activeKey] : []}
-              icon={(props: { expanded?: boolean; isLeaf?: boolean }) =>
-                props.isLeaf ? null : props.expanded
-                  ? <FolderFilled style={{ color: ORANGE }} />
-                  : <FolderOutlined style={{ color: ORANGE }} />}
-              style={{ background: 'transparent', fontSize: 13 }}
-            />
-          )}
-        </div>
-      </div>
-
-      {/* ── Right: editor ── */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-        {tabs.length === 0 ? (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={
-                <span style={{ color: '#999', fontSize: 13 }}>
-                  {t('files.selectFileToEdit')}
-                </span>
-              }
-            />
-          </div>
-        ) : (
-          <Tabs
-            className="files-tabs"
-            type="editable-card"
-            hideAdd
-            activeKey={activeKey}
-            onChange={setActiveKey}
-            onEdit={onTabEdit}
-            tabBarStyle={{ marginBottom: 0, padding: '0 12px' }}
-            items={tabs.map((tab) => ({
-              key: tab.path,
-              label: (
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  {tab.isKernel
-                    ? <ControlOutlined style={{ color: ORANGE, fontSize: 13 }} />
-                    : <FileMarkdownOutlined style={{ color: '#999', fontSize: 13 }} />}
-                  {tab.name}
-                  {contents[tab.path] !== originals[tab.path] && (
-                    <span style={{
-                      width: 6, height: 6, borderRadius: '50%', background: ORANGE,
-                      display: 'inline-block',
-                    }} />
-                  )}
-                </span>
-              ),
-              children: (
-                <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-                  {/* Editor toolbar */}
-                  <div style={{
-                    display: 'flex', alignItems: 'center', gap: 10,
-                    padding: '8px 16px', borderBottom: '1px solid #f5f5f5',
-                    background: '#fafafa',
-                  }}>
-                    <FileOutlined style={{ color: '#999' }} />
-                    <Text code style={{ fontSize: 12 }}>{tab.path}</Text>
-                    {tab.isKernel && (
-                      <Tag color="orange" style={{ marginInlineEnd: 0, fontSize: 11 }}>
-                        {t('files.kernelLabel')}
-                      </Tag>
-                    )}
-                    <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <Tooltip title={t('files.download')}>
-                        <Button
-                          size="small" type="text"
-                          icon={<DownloadOutlined />}
-                          disabled={tab.isKernel && contents[tab.path] === undefined}
-                          onClick={() => {
-                            window.open(`/api/agents/${agentId}/files/download?path=${encodeURIComponent(tab.path)}`, '_blank');
-                          }}
-                        />
-                      </Tooltip>
-                      <Button
-                        size="small"
-                        type="primary"
-                        icon={<SaveOutlined />}
-                        loading={saving}
-                        disabled={contents[tab.path] === originals[tab.path]}
-                        onClick={() => void saveFile(tab.path)}
-                        style={{
-                          background: contents[tab.path] !== originals[tab.path] ? ORANGE : undefined,
-                          borderColor: contents[tab.path] !== originals[tab.path] ? ORANGE : undefined,
-                        }}
-                      >
-                        {t('common.save')}
-                      </Button>
-                    </div>
+              {visibleKernelFiles.map((name) => {
+                const active = activeKey === name;
+                return (
+                  <div
+                    key={name}
+                    onClick={() => void openFile(name, name, true)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 'var(--google-space-3)',
+                      padding: 'var(--google-space-2) var(--google-space-4)', borderRadius: 'var(--google-radius-lg)', cursor: 'pointer',
+                      marginBottom: 'var(--google-space-1)', fontSize: 13,
+                      background: active ? 'rgba(66, 133, 244, 0.08)' : 'transparent',
+                      color: active ? 'var(--google-primary)' : 'var(--google-foreground)',
+                      border: active ? '1px solid rgba(66, 133, 244, 0.25)' : '1px solid transparent',
+                    }}
+                  >
+                    <ControlOutlined style={{ color: active ? 'var(--google-primary)' : 'var(--google-chart-3)' }} />
+                    <span style={{ fontWeight: active ? 600 : 400 }}>{name}</span>
+                    <Text style={{ fontSize: 11, marginLeft: 'auto', color: 'var(--google-muted-foreground)' }}>
+                      {t(KERNEL_LABEL_KEYS[name] ?? '')}
+                    </Text>
                   </div>
+                );
+              })}
 
-                  {/* Editor body */}
-                  {fileLoading && activeKey === tab.path ? (
-                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <Spin />
+              {/* Sandbox sync panel (only for sandbox-enabled agents) */}
+              {syncStatus && (
+                <div style={{
+                  margin: 'var(--google-space-6) var(--google-space-1) 0',
+                  padding: 'var(--google-space-3)',
+                  borderRadius: 'var(--google-radius-lg)',
+                  border: '1px solid var(--google-border)',
+                  background: 'var(--google-card)',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <CloudServerOutlined style={{
+                      color: syncStatus.container_alive ? '#34a853' : 'var(--google-muted-foreground)',
+                    }} />
+                    <Text style={{ fontSize: 12, fontWeight: 600 }}>{t('files.syncTitle')}</Text>
+                    <Text style={{ fontSize: 11, color: 'var(--google-muted-foreground)', marginLeft: 'auto' }}>
+                      {syncStatus.container_alive ? t('files.syncContainerRunning') : t('files.syncContainerStopped')}
+                    </Text>
+                  </div>
+                  {syncStatus.summary && (
+                    <div style={{ fontSize: 11, color: 'var(--google-muted-foreground)', margin: '4px 0 0' }}>
+                      {t('files.syncSummary', {
+                        synced: syncStatus.summary.synced,
+                        push: syncStatus.summary.pending_push,
+                        pull: syncStatus.summary.pending_pull,
+                        conflict: syncStatus.summary.conflict,
+                      })}
                     </div>
-                  ) : (
-                    <Input.TextArea
-                      value={contents[tab.path] ?? ''}
-                      onChange={(e) =>
-                        setContents((prev) => ({ ...prev, [tab.path]: e.target.value }))}
-                      onKeyDown={handleEditorKeyDown}
-                      placeholder={t('files.emptyFile')}
-                      spellCheck={false}
-                      style={{
-                        flex: 1, minHeight: 0, resize: 'none', border: 'none', borderRadius: 0,
-                        padding: 16, fontSize: 13, lineHeight: 1.7,
-                        fontFamily: "'JetBrains Mono', Menlo, Consolas, monospace",
-                        boxShadow: 'none',
-                      }}
-                    />
                   )}
-
-                  {/* Status bar */}
-                  <div style={{
-                    padding: '4px 16px', borderTop: '1px solid #f0f0f0',
-                    display: 'flex', gap: 16, fontSize: 11, color: '#999', background: '#fafafa',
-                  }}>
-                    <span>{t('files.chars', { count: (contents[tab.path] ?? '').length })}</span>
-                    <span>{t('files.lines', { count: (contents[tab.path] ?? '').split('\n').length })}</span>
-                    {contents[tab.path] !== originals[tab.path] && (
-                      <span style={{ color: ORANGE }}>{t('files.unsaved')}</span>
-                    )}
-                    {activeIsKernel && tab.path === activeKey && dirty && (
-                      <span>{t('files.rebuildHint')}</span>
-                    )}
+                  <div style={{ display: 'flex', gap: 6, marginTop: 6, alignItems: 'center' }}>
+                    <Dropdown
+                      menu={{
+                        items: [
+                          { key: 'push', label: t('files.syncPush'), icon: <ArrowUpOutlined /> },
+                          { key: 'pull', label: t('files.syncPull'), icon: <ArrowDownOutlined /> },
+                          { key: 'both', label: t('files.syncBoth'), icon: <SyncOutlined /> },
+                        ],
+                        onClick: ({ key }) => void runSync(key as 'push' | 'pull' | 'both'),
+                      }}
+                    >
+                      <Button size="small" icon={<SyncOutlined spin={syncing} />} loading={syncing}>
+                        {t('files.syncAction')}
+                      </Button>
+                    </Dropdown>
+                    <Tooltip title={t('files.syncRefresh')}>
+                      <Button size="small" type="text" icon={<ReloadOutlined style={{ fontSize: 13 }} />}
+                        onClick={() => void loadSyncStatus()}
+                        style={{ color: 'var(--google-muted-foreground)' }} />
+                    </Tooltip>
                   </div>
                 </div>
-              ),
-            }))}
-          />
-        )}
-      </div>
+              )}
+
+              {/* Workspace files */}
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                margin: 'var(--google-space-6) var(--google-space-1) var(--google-space-3)',
+              }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--google-muted-foreground)', letterSpacing: 0.5 }}>
+                  {t('files.workspaceFiles')}
+                </span>
+                <span style={{ display: 'flex', gap: 'var(--google-space-1)' }}>
+                  <Upload {...uploadProps}>
+                    <Tooltip title={t('files.uploadTo', { dir: uploadDir || t('files.rootDir') })}>
+                      <Button type="text" size="small" icon={<UploadOutlined style={{ fontSize: 13 }} />}
+                        style={{ color: 'var(--google-muted-foreground)' }} />
+                    </Tooltip>
+                  </Upload>
+                  <Tooltip title={t('common.refresh')}>
+                    <Button type="text" size="small" icon={<ReloadOutlined style={{ fontSize: 13 }} />}
+                      onClick={() => void reloadTree()} style={{ color: 'var(--google-muted-foreground)' }} />
+                  </Tooltip>
+                </span>
+              </div>
+              {treeLoading ? (
+                <div style={{ textAlign: 'center', padding: 'var(--google-space-8)' }}><Spin size="small" /></div>
+              ) : treeData.length === 0 ? (
+                <Text style={{ fontSize: 12, padding: '0 var(--google-space-1)', color: 'var(--google-muted-foreground)' }}>
+                  {t('files.workspaceEmpty')}
+                </Text>
+              ) : (
+                <Tree
+                  className="files-tree"
+                  showIcon
+                  blockNode
+                  selectable
+                  treeData={treeData}
+                  loadData={onLoadData}
+                  onSelect={onTreeSelect}
+                  expandedKeys={expandedKeys}
+                  onExpand={(keys) => setExpandedKeys(keys)}
+                  selectedKeys={activeTab && !activeTab.isKernel ? [activeKey] : []}
+                  icon={(props: { expanded?: boolean; isLeaf?: boolean }) =>
+                    props.isLeaf ? null : props.expanded
+                      ? <FolderFilled style={{ color: 'var(--google-chart-3)' }} />
+                      : <FolderOutlined style={{ color: 'var(--google-chart-3)' }} />}
+                  style={{ background: 'transparent', fontSize: 13 }}
+                />
+              )}
+            </div>
+          </div>
+
+          {/* ── Right: editor ── */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+            {tabs.length === 0 ? (
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Empty
+                  image={Empty.PRESENTED_IMAGE_SIMPLE}
+                  description={
+                    <span style={{ color: 'var(--google-muted-foreground)', fontSize: 13 }}>
+                      {t('files.selectFileToEdit')}
+                    </span>
+                  }
+                />
+              </div>
+            ) : (
+              <Tabs
+                className="files-tabs"
+                type="editable-card"
+                hideAdd
+                activeKey={activeKey}
+                onChange={setActiveKey}
+                onEdit={onTabEdit}
+                tabBarStyle={{ marginBottom: 0, padding: '0 var(--google-space-4)' }}
+                items={tabs.map((tab) => ({
+                  key: tab.path,
+                  label: (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--google-space-2)' }}>
+                      {tab.isKernel
+                        ? <ControlOutlined style={{ color: 'var(--google-primary)', fontSize: 13 }} />
+                        : <FileMarkdownOutlined style={{ color: 'var(--google-muted-foreground)', fontSize: 13 }} />}
+                      {tab.name}
+                      {contents[tab.path] !== originals[tab.path] && (
+                        <span style={{
+                          width: 6, height: 6, borderRadius: '50%', background: 'var(--google-primary)',
+                          display: 'inline-block',
+                        }} />
+                      )}
+                    </span>
+                  ),
+                  children: (
+                    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+                      {/* Editor toolbar */}
+                      <div style={{
+                        display: 'flex', alignItems: 'center', gap: 'var(--google-space-4)',
+                        padding: 'var(--google-space-3) var(--google-space-6)', borderBottom: '1px solid var(--google-border)',
+                        background: 'var(--google-muted)',
+                      }}>
+                        <FileOutlined style={{ color: 'var(--google-muted-foreground)' }} />
+                        <Text code style={{ fontSize: 12 }}>{tab.path}</Text>
+                        {tab.isKernel && (
+                          <Tag style={{
+                            marginInlineEnd: 0, fontSize: 11,
+                            color: 'var(--google-primary)',
+                            background: 'rgba(66, 133, 244, 0.08)',
+                            borderColor: 'rgba(66, 133, 244, 0.25)',
+                          }}>
+                            {t('files.kernelLabel')}
+                          </Tag>
+                        )}
+                        {isMarkdown(tab.name) && (
+                          <Segmented
+                            size="small"
+                            value={modeFor(tab)}
+                            onChange={(v) =>
+                              setViewModes((prev) => ({ ...prev, [tab.path]: v as 'edit' | 'preview' }))
+                            }
+                            options={[
+                              { label: t('files.preview'), value: 'preview', icon: <EyeOutlined /> },
+                              { label: t('files.edit'), value: 'edit', icon: <EditOutlined /> },
+                            ]}
+                          />
+                        )}
+                        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 'var(--google-space-3)' }}>
+                          <Tooltip title={t('files.download')}>
+                            <Button
+                              size="small" type="text"
+                              icon={<DownloadOutlined />}
+                              disabled={tab.isKernel && contents[tab.path] === undefined}
+                              onClick={() => {
+                                window.open(`${apiClient.defaults.baseURL}/agents/${agentId}/files/download?path=${encodeURIComponent(tab.path)}`, '_blank');
+                              }}
+                            />
+                          </Tooltip>
+                          {!tab.isKernel && (
+                            <Popconfirm
+                              title={t('files.delete')}
+                              description={t('files.deleteFileConfirm', { name: tab.name })}
+                              okText={t('common.delete')}
+                              cancelText={t('common.cancel')}
+                              okButtonProps={{ danger: true }}
+                              onConfirm={() => void deleteEntry(tab.path, false)}
+                            >
+                              <Tooltip title={t('files.delete')}>
+                                <Button size="small" danger type="text" icon={<DeleteOutlined />} />
+                              </Tooltip>
+                            </Popconfirm>
+                          )}
+                          <Button
+                            size="small"
+                            type="primary"
+                            icon={<SaveOutlined />}
+                            loading={saving}
+                            disabled={contents[tab.path] === originals[tab.path]}
+                            onClick={() => void saveFile(tab.path)}
+                          >
+                            {t('common.save')}
+                          </Button>
+                        </div>
+                      </div>
+
+                      {/* Editor body */}
+                      {fileLoading && activeKey === tab.path ? (
+                        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <Spin />
+                        </div>
+                      ) : modeFor(tab) === 'preview' ? (
+                        <div style={{
+                          flex: 1, minHeight: 0, overflow: 'auto',
+                          padding: 'var(--google-space-6) var(--google-space-8)',
+                          fontSize: 14, lineHeight: 1.75,
+                        }}>
+                          <MarkdownView text={contents[tab.path] ?? ''} />
+                        </div>
+                      ) : (
+                        <Input.TextArea
+                          value={contents[tab.path] ?? ''}
+                          onChange={(e) =>
+                            setContents((prev) => ({ ...prev, [tab.path]: e.target.value }))}
+                          onKeyDown={handleEditorKeyDown}
+                          placeholder={t('files.emptyFile')}
+                          spellCheck={false}
+                          style={{
+                            flex: 1, minHeight: 0, resize: 'none', border: 'none', borderRadius: 0,
+                            padding: 'var(--google-space-6)', fontSize: 13, lineHeight: 1.7,
+                            fontFamily: 'var(--google-font-mono)',
+                            boxShadow: 'none',
+                          }}
+                        />
+                      )}
+
+                      {/* Status bar */}
+                      <div style={{
+                        padding: 'var(--google-space-1) var(--google-space-6)', borderTop: '1px solid var(--google-border)',
+                        display: 'flex', gap: 'var(--google-space-6)', fontSize: 11, color: 'var(--google-muted-foreground)', background: 'var(--google-muted)',
+                      }}>
+                        <span>{t('files.chars', { count: (contents[tab.path] ?? '').length })}</span>
+                        <span>{t('files.lines', { count: (contents[tab.path] ?? '').split('\n').length })}</span>
+                        {contents[tab.path] !== originals[tab.path] && (
+                          <span style={{ color: 'var(--google-chart-3)' }}>{t('files.unsaved')}</span>
+                        )}
+                        {activeIsKernel && tab.path === activeKey && dirty && (
+                          <span>{t('files.rebuildHint')}</span>
+                        )}
+                      </div>
+                    </div>
+                  ),
+                }))}
+              />
+            )}
+          </div>
+        </div>
+      </GoogleCard>
       <style>{`
         .files-tabs { display: flex; flex-direction: column; height: 100%; }
         /* antd v6 Tabs DOM: .ant-tabs-body-holder > .ant-tabs-body > .ant-tabs-content(pane) */
@@ -524,6 +829,28 @@ export default function FilesPage() {
         .files-tabs .ant-tabs-body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
         .files-tabs .ant-tabs-content:not(.ant-tabs-content-hidden) { flex: 1; display: flex; flex-direction: column; min-height: 0; }
         .files-tabs .ant-tabs-content > div { flex: 1; min-height: 0; }
+        /* File tree: keep every entry on a single line — long names get an
+           ellipsis instead of wrapping the icon/name/size into a mess. */
+        .files-tree .ant-tree-node-content-wrapper { display: flex; align-items: center; min-width: 0; overflow: hidden; }
+        .files-tree .ant-tree-iconEle { flex-shrink: 0; }
+        .files-tree .ant-tree-title { flex: 1; min-width: 0; display: block; overflow: hidden; }
+        .files-tree-dir { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+        .files-tree-file { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+        .files-tree-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .files-tree-size { flex-shrink: 0; font-size: 11px !important; color: var(--google-muted-foreground); }
+        /* Hover-revealed delete action on tree nodes */
+        .files-tree-del {
+          display: inline-flex; align-items: center; justify-content: center;
+          margin-left: auto; padding: 0 4px; flex-shrink: 0;
+          color: var(--google-muted-foreground); visibility: hidden;
+          transition: color var(--google-transition-fast);
+        }
+        .files-tree .ant-tree-node-content-wrapper:hover .files-tree-del { visibility: visible; }
+        .files-tree-del:hover { color: var(--google-destructive); }
+        /* Sandbox sync status dot shown before mirrored file names */
+        .files-sync-dot {
+          width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; display: inline-block;
+        }
       `}</style>
     </div>
   );

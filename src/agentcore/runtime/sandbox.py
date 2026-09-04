@@ -140,12 +140,44 @@ _FACTORIES: dict[str, type[SandboxBackendFactory]] = {
 }
 
 
+def _get_opensandbox_factory_cls() -> type[SandboxBackendFactory]:
+    """Lazy-import the OpenSandbox factory to avoid hard dependency."""
+    from agentcore.sandbox.factory import OpenSandboxFactory
+    return OpenSandboxFactory
+
+
+def _get_aio_factory_cls() -> type[SandboxBackendFactory]:
+    """Lazy-import the AIO factory to avoid hard dependency."""
+    from agentcore.sandbox.factory import AIOSandboxFactory
+    return AIOSandboxFactory
+
+
+def register_opensandbox() -> None:
+    """Register the ``opensandbox`` provider if not already present."""
+    if "opensandbox" not in _FACTORIES:
+        _FACTORIES["opensandbox"] = _get_opensandbox_factory_cls()
+
+
+def register_aio() -> None:
+    """Register the ``aio`` provider if not already present."""
+    if "aio" not in _FACTORIES:
+        _FACTORIES["aio"] = _get_aio_factory_cls()
+
+
 def get_sandbox_factory(provider: str) -> SandboxBackendFactory:
     """Return a :class:`SandboxBackendFactory` for the given provider.
 
     Raises :class:`ValueError` for unknown providers.
     """
-    cls = _FACTORIES.get(provider.lower())
+    provider_lower = provider.lower()
+
+    # Auto-register lazy-loaded providers
+    if provider_lower == "opensandbox":
+        register_opensandbox()
+    elif provider_lower == "aio":
+        register_aio()
+
+    cls = _FACTORIES.get(provider_lower)
     if cls is None:
         raise ValueError(
             f"Unknown sandbox provider {provider!r}. "

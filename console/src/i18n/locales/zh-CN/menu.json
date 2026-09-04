@@ -8,6 +8,7 @@
   "heartbeat": "心跳",
   "workspace": "工作区",
   "files": "文件",
+  "memory": "记忆",
   "skills": "技能",
   "tools": "工具",
   "agentConfig": "运行配置",
@@ -21,5 +22,7 @@
   "tokenUsage": "Token 消耗",
   "backups": "备份",
   "voice": "语音转写",
-  "debug": "调试"
+  "debug": "调试",
+  "sandbox": "沙箱",
+  "sandboxControl": "沙箱控制平面"
 }

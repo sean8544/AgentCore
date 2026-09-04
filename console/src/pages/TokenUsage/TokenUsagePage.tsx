@@ -9,18 +9,25 @@ import {
   Space,
   Statistic,
   Table,
+  Tabs,
   Tag,
   Typography,
 } from 'antd';
-import { DashboardOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import {
+  DashboardOutlined,
+  ThunderboltOutlined,
+  TeamOutlined,
+  ApiOutlined,
+  CalendarOutlined,
+} from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { apiClient } from '../../api/client';
 import { useI18n } from '../../i18n';
+import GooglePageHeader from '../../components/GooglePageHeader';
+import { getChartColors } from '../../styles/chart-colors';
+import { useAppStore } from '../../stores/appStore';
 
 const { Text } = Typography;
-
-/* ───────── Constants ───────── */
-const ORANGE = '#FF7F16';
 
 /* ───────── Types ───────── */
 interface DailyItem {
@@ -39,11 +46,20 @@ interface AgentItem {
   requests: number;
 }
 
+interface ModelItem {
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  requests: number;
+}
+
 interface UsageData {
   days: number;
   totals: { input_tokens: number; output_tokens: number; total_tokens: number; requests: number };
   daily: DailyItem[];
   by_agent: AgentItem[];
+  by_model: ModelItem[];
 }
 
 function formatNum(n: number): string {
@@ -52,11 +68,16 @@ function formatNum(n: number): string {
 
 export default function TokenUsagePage() {
   const { t } = useI18n();
+  const resolvedTheme = useAppStore((s) => s.resolvedTheme);
   const [agents, setAgents] = useState<{ agent_id: string }[]>([]);
   const [agentFilter, setAgentFilter] = useState<string | undefined>(undefined);
   const [days, setDays] = useState<number>(7);
   const [data, setData] = useState<UsageData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<string>('overview');
+
+  const chartColors = getChartColors(resolvedTheme === 'dark');
+  const primaryColor = chartColors[0];
 
   /* ── Agent list ── */
   useEffect(() => {
@@ -66,7 +87,7 @@ export default function TokenUsagePage() {
       .catch(() => { /* ignore */ });
   }, []);
 
-  /* ── Load usage ── */
+  /* ─ Load usage ── */
   const loadUsage = useCallback(async () => {
     setLoading(true);
     try {
@@ -106,7 +127,7 @@ export default function TokenUsagePage() {
       title: t('tokenUsage.total'),
       dataIndex: 'total_tokens',
       align: 'right',
-      render: (v: number) => <Text strong style={{ color: ORANGE }}>{formatNum(v)}</Text>,
+      render: (v: number) => <Text strong style={{ color: primaryColor }}>{formatNum(v)}</Text>,
     },
     { title: t('tokenUsage.requests'), dataIndex: 'requests', width: 90, align: 'right' },
   ];
@@ -128,84 +149,123 @@ export default function TokenUsagePage() {
     { title: t('tokenUsage.requests'), dataIndex: 'requests', width: 90, align: 'right' },
   ];
 
-  return (
-    <div style={{ padding: 24 }}>
-      {/* ── Header / filters ── */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-        <Space>
-          <DashboardOutlined style={{ color: ORANGE, fontSize: 16 }} />
-          <Text strong style={{ fontSize: 15 }}>{t('tokenUsage.title')}</Text>
-        </Space>
-        <Space>
-          <Select
-            size="small"
-            allowClear
-            placeholder={t('tokenUsage.allAgents')}
-            value={agentFilter}
-            onChange={(v) => setAgentFilter(v)}
-            style={{ width: 160 }}
-            options={agents.map((a) => ({ value: a.agent_id, label: a.agent_id }))}
-          />
-          <Segmented
-            size="small"
-            value={days}
-            onChange={(v) => setDays(Number(v))}
-            options={[
-              { value: 7, label: t('tokenUsage.last7Days') },
-              { value: 14, label: t('tokenUsage.last14Days') },
-              { value: 30, label: t('tokenUsage.last30Days') },
-            ]}
-          />
-        </Space>
-      </div>
+  const modelColumns: ColumnsType<ModelItem> = [
+    {
+      title: 'Model',
+      dataIndex: 'model',
+      render: (m: string) => <Tag style={{ fontSize: 12 }}>{m}</Tag>,
+    },
+    { title: t('tokenUsage.input'), dataIndex: 'input_tokens', align: 'right', render: (v: number) => formatNum(v) },
+    { title: t('tokenUsage.output'), dataIndex: 'output_tokens', align: 'right', render: (v: number) => formatNum(v) },
+    {
+      title: t('tokenUsage.total'),
+      dataIndex: 'total_tokens',
+      align: 'right',
+      render: (v: number) => <Text strong>{formatNum(v)}</Text>,
+    },
+    { title: t('tokenUsage.requests'), dataIndex: 'requests', width: 90, align: 'right' },
+  ];
 
-      {/* ── Summary cards ── */}
-      <Row gutter={16} style={{ marginBottom: 16 }}>
-        <Col span={6}>
-          <Card size="small">
-            <Statistic title={t('tokenUsage.totalToken')} value={data?.totals.total_tokens ?? 0}
-              valueStyle={{ color: ORANGE, fontSize: 24 }} />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card size="small">
-            <Statistic title={t('tokenUsage.inputToken')} value={data?.totals.input_tokens ?? 0} valueStyle={{ fontSize: 24 }} />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card size="small">
-            <Statistic title={t('tokenUsage.outputToken')} value={data?.totals.output_tokens ?? 0} valueStyle={{ fontSize: 24 }} />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card size="small">
-            <Statistic title={t('tokenUsage.requestCount')} value={data?.totals.requests ?? 0} valueStyle={{ fontSize: 24 }} />
-          </Card>
-        </Col>
-      </Row>
+  const headerExtra = (
+    <Space>
+      <Select
+        size="small"
+        allowClear
+        placeholder={t('tokenUsage.allAgents')}
+        value={agentFilter}
+        onChange={(v) => setAgentFilter(v)}
+        style={{ width: 160 }}
+        options={agents.map((a) => ({ value: a.agent_id, label: a.agent_id }))}
+      />
+      <Segmented
+        size="small"
+        value={days}
+        onChange={(v) => setDays(Number(v))}
+        options={[
+          { value: 7, label: t('tokenUsage.last7Days') },
+          { value: 14, label: t('tokenUsage.last14Days') },
+          { value: 30, label: t('tokenUsage.last30Days') },
+        ]}
+      />
+    </Space>
+  );
 
-      <Row gutter={16}>
-        {/* ── Daily trend (CSS bars) ── */}
-        <Col span={12}>
+  const tabItems = [
+    {
+      key: 'overview',
+      label: (
+        <span>
+          <DashboardOutlined />
+          {t('tokenUsage.overview') || '概览'}
+        </span>
+      ),
+      children: (
+        <>
+          {/* ── Summary cards ── */}
+          <Row gutter={[24, 24]} style={{ marginBottom: 24 }}>
+            <Col xs={24} sm={12} lg={6}>
+              <Card>
+                <Statistic
+                  title={t('tokenUsage.totalToken')}
+                  value={data?.totals.total_tokens ?? 0}
+                  valueStyle={{ color: primaryColor, fontSize: 28 }}
+                />
+              </Card>
+            </Col>
+            <Col xs={24} sm={12} lg={6}>
+              <Card>
+                <Statistic
+                  title={t('tokenUsage.inputToken')}
+                  value={data?.totals.input_tokens ?? 0}
+                  valueStyle={{ fontSize: 28 }}
+                />
+              </Card>
+            </Col>
+            <Col xs={24} sm={12} lg={6}>
+              <Card>
+                <Statistic
+                  title={t('tokenUsage.outputToken')}
+                  value={data?.totals.output_tokens ?? 0}
+                  valueStyle={{ fontSize: 28 }}
+                />
+              </Card>
+            </Col>
+            <Col xs={24} sm={12} lg={6}>
+              <Card>
+                <Statistic
+                  title={t('tokenUsage.requestCount')}
+                  value={data?.totals.requests ?? 0}
+                  valueStyle={{ fontSize: 28 }}
+                />
+              </Card>
+            </Col>
+          </Row>
+
+          {/* ── Daily trend chart ── */}
           <Card
-            title={<Space><ThunderboltOutlined style={{ color: ORANGE }} /><span>{t('tokenUsage.dailyTrend')}</span></Space>}
-            size="small"
-            styles={{ body: { minHeight: 220 } }}
+            title={
+              <Space>
+                <ThunderboltOutlined style={{ color: primaryColor }} />
+                <span>{t('tokenUsage.dailyTrend')}</span>
+              </Space>
+            }
           >
             {daily.length === 0 ? (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={loading ? t('tokenUsage.noData') : t('tokenUsage.noDataAvailable')} />
             ) : (
-              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, height: 200, padding: '8px 4px 0' }}>
+              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16, height: 280, padding: '24px 16px 0' }}>
                 {daily.map((d) => (
-                  <div key={d.date} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, minWidth: 0 }}>
-                    <Text style={{ fontSize: 11, color: ORANGE }}>{formatNum(d.total_tokens)}</Text>
+                  <div key={d.date} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                    <Text style={{ fontSize: 13, color: primaryColor, fontWeight: 500 }}>{formatNum(d.total_tokens)}</Text>
                     <div style={{
-                      width: '70%', maxWidth: 40,
-                      height: Math.max(4, Math.round((d.total_tokens / maxTotal) * 130)),
-                      background: `linear-gradient(180deg, ${ORANGE}, #ffb473)`,
-                      borderRadius: '4px 4px 0 0',
+                      width: '60%',
+                      maxWidth: 60,
+                      height: Math.max(8, Math.round((d.total_tokens / maxTotal) * 200)),
+                      background: `linear-gradient(180deg, ${primaryColor} 0%, ${primaryColor}88 100%)`,
+                      borderRadius: '6px 6px 0 0',
+                      transition: 'height 0.3s ease',
                     }} />
-                    <Text type="secondary" style={{ fontSize: 10, transform: 'rotate(0deg)', whiteSpace: 'nowrap' }}>
+                    <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
                       {d.date.slice(5)}
                     </Text>
                   </div>
@@ -213,34 +273,88 @@ export default function TokenUsagePage() {
               </div>
             )}
           </Card>
-        </Col>
+        </>
+      ),
+    },
+    {
+      key: 'agents',
+      label: (
+        <span>
+          <TeamOutlined />
+          {t('tokenUsage.agentBreakdown')}
+        </span>
+      ),
+      children: (
+        <Card bodyStyle={{ padding: 0 }}>
+          <Table<AgentItem>
+            rowKey="agent_id"
+            size="middle"
+            loading={loading}
+            columns={agentColumns}
+            dataSource={data?.by_agent ?? []}
+            pagination={{ pageSize: 10, showSizeChanger: true, showTotal: (total) => `共 ${total} 个 Agent` }}
+          />
+        </Card>
+      ),
+    },
+    {
+      key: 'models',
+      label: (
+        <span>
+          <ApiOutlined />
+          {t('tokenUsage.modelBreakdown')}
+        </span>
+      ),
+      children: (
+        <Card bodyStyle={{ padding: 0 }}>
+          <Table<ModelItem>
+            rowKey="model"
+            size="middle"
+            loading={loading}
+            columns={modelColumns}
+            dataSource={data?.by_model ?? []}
+            pagination={{ pageSize: 10, showSizeChanger: true, showTotal: (total) => `共 ${total} 个模型` }}
+          />
+        </Card>
+      ),
+    },
+    {
+      key: 'daily',
+      label: (
+        <span>
+          <CalendarOutlined />
+          {t('tokenUsage.dailyDetail')}
+        </span>
+      ),
+      children: (
+        <Card bodyStyle={{ padding: 0 }}>
+          <Table<DailyItem>
+            rowKey="date"
+            size="middle"
+            loading={loading}
+            columns={dailyColumns}
+            dataSource={[...daily].reverse()}
+            pagination={{ pageSize: 10, showSizeChanger: true, showTotal: (total) => `共 ${total} 天` }}
+          />
+        </Card>
+      ),
+    },
+  ];
 
-        {/* ── Per-agent breakdown ── */}
-        <Col span={12}>
-          <Card title={<span>{t('tokenUsage.agentBreakdown')}</span>} size="small" styles={{ body: { padding: 0 } }}>
-            <Table<AgentItem>
-              rowKey="agent_id"
-              size="small"
-              loading={loading}
-              columns={agentColumns}
-              dataSource={data?.by_agent ?? []}
-              pagination={false}
-            />
-          </Card>
-        </Col>
-      </Row>
+  return (
+    <div>
+      <GooglePageHeader
+        icon={<DashboardOutlined />}
+        title={t('tokenUsage.title')}
+        extra={headerExtra}
+      />
 
-      {/* ── Daily table ── */}
-      <Card title={<span>{t('tokenUsage.dailyDetail')}</span>} size="small" style={{ marginTop: 16 }} styles={{ body: { padding: 0 } }}>
-        <Table<DailyItem>
-          rowKey="date"
-          size="small"
-          loading={loading}
-          columns={dailyColumns}
-          dataSource={[...daily].reverse()}
-          pagination={false}
-        />
-      </Card>
+      <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
+        items={tabItems}
+        style={{ marginTop: 16 }}
+      />
     </div>
   );
 }

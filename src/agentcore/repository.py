@@ -247,16 +247,27 @@ class ControlPlaneStore:
 
         return dict(self.sessions)
 
+    def delete_sessions(self, session_ids: list[str]) -> None:
+        """Remove multiple sessions from persistence, rewriting the index once."""
+
+        removed = 0
+        for session_id in session_ids:
+            if session_id not in self.sessions:
+                continue
+            self.sessions.pop(session_id, None)
+            path = self._sessions_dir / (
+                f"{self._session_file_name(session_id)}.json"
+            )
+            if path.exists():
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+            removed += 1
+        if removed:
+            self._save_sessions_index()
+
     def delete_session(self, session_id: str) -> None:
         """Remove a session from persistence."""
 
-        self.sessions.pop(session_id, None)
-        path = self._sessions_dir / (
-            f"{self._session_file_name(session_id)}.json"
-        )
-        if path.exists():
-            try:
-                path.unlink()
-            except OSError:
-                pass
-        self._save_sessions_index()
+        self.delete_sessions([session_id])

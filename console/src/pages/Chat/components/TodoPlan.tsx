@@ -1,18 +1,25 @@
-import { Progress, Spin, Tag, Tooltip, Typography } from 'antd';
+import { useEffect, useRef } from 'react';
+import { Button, Progress, Spin, Tag, Tooltip, Typography } from 'antd';
 import {
+  BulbOutlined,
   CheckCircleFilled,
+  CheckCircleOutlined,
   ClockCircleOutlined,
+  CloseCircleFilled,
   LoadingOutlined,
   RobotOutlined,
+  RocketOutlined,
   SendOutlined,
 } from '@ant-design/icons';
 import {
   formatTimestamp,
   type Delegation,
+  type DelegationActivity,
   type DelegationRecord,
   type TodoItem,
 } from '../../../stores/chatStore';
 import { useI18n } from '../../../i18n';
+import CollapsibleBadge from './CollapsibleBadge';
 
 const { Text } = Typography;
 
@@ -148,73 +155,215 @@ export function TodoPanel({ todos }: { todos: TodoItem[] }) {
 
 /* ───────── Delegation bubble (inside a message) ───────── */
 
+/** One row of the subagent live activity feed. */
+function ActivityRow({ act }: { act: DelegationActivity }) {
+  const { t } = useI18n();
+  let icon = <LoadingOutlined style={{ color: '#1677ff' }} />;
+  let text = act.name || '';
+  switch (act.kind) {
+    case 'started':
+      icon = <RocketOutlined style={{ color: '#d48806' }} />;
+      text = t('chat.subagentStarted');
+      break;
+    case 'thinking':
+      icon = <BulbOutlined style={{ color: '#8c8c8c' }} />;
+      text = t('chat.subagentThinking');
+      break;
+    case 'tool_done':
+      icon = <CheckCircleOutlined style={{ color: '#52c41a' }} />;
+      break;
+    case 'completed':
+      icon = <CheckCircleFilled style={{ color: '#52c41a' }} />;
+      text = t('chat.subagentCompleted');
+      break;
+    case 'error':
+      icon = <CloseCircleFilled style={{ color: '#ff4d4f' }} />;
+      text = act.name ? `${act.name} — ${t('chat.subagentError')}` : t('chat.subagentError');
+      break;
+    case 'collapsed':
+      icon = <span style={{ color: '#bfbfbf' }}>{'\u22EF'}</span>;
+      text = t('chat.subagentCollapsed', { count: String(act.name ?? '').replace('+', '') });
+      break;
+  }
+  const muted = act.kind === 'collapsed';
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '1.5px 0', fontSize: 12 }}>
+      <span style={{ width: 14, textAlign: 'center', flexShrink: 0, fontSize: 12 }}>{icon}</span>
+      <span
+        style={{
+          fontFamily: 'ui-monospace, Menlo, Consolas, monospace',
+          color: muted ? '#bfbfbf' : '#555',
+          wordBreak: 'break-all',
+        }}
+      >
+        {text}
+      </span>
+    </div>
+  );
+}
+
+/** Collapse consecutive duplicate ``thinking`` rows. */
+function dedupeActivity(acts: DelegationActivity[]): DelegationActivity[] {
+  const out: DelegationActivity[] = [];
+  for (const a of acts) {
+    const prev = out[out.length - 1];
+    if (
+      a.kind === 'thinking' && prev && prev.kind === 'thinking'
+    ) {
+      continue;
+    }
+    out.push(a);
+  }
+  return out;
+}
+
+/**
+ * Delegation badge with a *live* subagent activity feed.
+ *
+ * The running state comes from real ``task``-tool lifecycle events
+ * (``subagent_activity`` SSE channel), not from the parent stream flag.
+ * While running the body auto-expands and auto-scrolls; the final feed
+ * stays available afterwards via the persisted activity timeline.
+ *
+ * The whole pill toggles expand/collapse; a dedicated "open subagent
+ * session" button lives in the expanded body so navigation is no
+ * longer the default click target (previously a single misclick
+ * would leave the current conversation).
+ */
 export function DelegationBubble({
   delegation,
   running,
-  onClick,
+  onOpenSession,
 }: {
   delegation: Delegation;
   running?: boolean;
-  onClick?: () => void;
+  onOpenSession?: () => void;
 }) {
   const { t } = useI18n();
-  return (
-    <div
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 8,
-        padding: '7px 14px',
-        background: '#fffbe6',
-        borderRadius: 10,
-        marginBottom: 8,
-        border: '1px solid #ffe58f',
-        cursor: onClick ? 'pointer' : 'default',
-        transition: onClick ? 'box-shadow 0.2s' : undefined,
-      }}
-      onClick={onClick}
-      role={onClick ? 'button' : undefined}
-      tabIndex={onClick ? 0 : undefined}
-      onKeyDown={onClick ? (e) => { if (e.key === 'Enter') onClick(); } : undefined}
-    >
-      <span
-        style={{
-          width: 22,
-          height: 22,
-          borderRadius: 6,
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          background: '#fff7e6',
-          color: '#d48806',
-          fontSize: 13,
-          flexShrink: 0,
-        }}
-      >
-        <RobotOutlined />
-      </span>
-      <div style={{ lineHeight: 1.5 }}>
-        <Text style={{ fontSize: 13, color: '#874d00' }}>
-          {t('chat.delegatedTo', { agent: delegation.subagent })}
-        </Text>
-        {delegation.description && (
-          <div>
-            <Text type="secondary" style={{ fontSize: 12, color: '#ad6800' }}>
-              {delegation.description}
-            </Text>
+  const isRunning = delegation.running ?? !!running;
+  const acts = dedupeActivity(delegation.activity ?? []);
+  const feedRef = useRef<HTMLDivElement | null>(null);
+
+  // Keep the live feed pinned to the latest step while running.
+  useEffect(() => {
+    if (isRunning && feedRef.current) {
+      feedRef.current.scrollTop = feedRef.current.scrollHeight;
+    }
+  }, [acts.length, isRunning]);
+
+  const lastTool = [...acts].reverse().find((a) => a.kind === 'tool' || a.kind === 'tool_done');
+  const toolCount = acts.filter((a) => a.kind === 'tool').length;
+
+  const body = (
+    <div style={{ minWidth: 240 }}>
+      {acts.length > 0 && (
+        <div style={{ marginBottom: delegation.description ? 10 : 8 }}>
+          <div
+            style={{
+              fontSize: 11,
+              color: '#8c8c8c',
+              marginBottom: 2,
+              textTransform: 'uppercase',
+              letterSpacing: 0.4,
+            }}
+          >
+            {t('chat.subagentActivity')}
+            {toolCount > 0 && ` · ${t('chat.subagentToolCount', { count: toolCount })}`}
           </div>
-        )}
-      </div>
-      {running && (
-        <Tag
-          icon={<Spin size="small" style={{ fontSize: 10 }} />}
-          color="gold"
-          style={{ marginInlineEnd: 0, fontSize: 11 }}
-        >
-          {t('chat.subagentRunning')}
-        </Tag>
+          <div
+            ref={feedRef}
+            style={{
+              maxHeight: 168,
+              overflowY: 'auto',
+              scrollbarWidth: 'thin',
+              background: '#fafafa',
+              border: '1px solid #f0f0f0',
+              borderRadius: 6,
+              padding: '4px 8px',
+            }}
+          >
+            {acts.map((a, i) => (
+              <ActivityRow key={i} act={a} />
+            ))}
+          </div>
+        </div>
+      )}
+      {delegation.description && (
+        <div style={{ marginBottom: onOpenSession ? 10 : 0 }}>
+          <div
+            style={{
+              fontSize: 11,
+              color: '#8c8c8c',
+              marginBottom: 2,
+              textTransform: 'uppercase',
+              letterSpacing: 0.4,
+            }}
+          >
+            {t('chat.taskDescription')}
+          </div>
+          <div
+            style={{
+              fontSize: 12.5,
+              color: '#333',
+              lineHeight: 1.6,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+            }}
+          >
+            {delegation.description}
+          </div>
+        </div>
+      )}
+      {onOpenSession && (
+        <div style={{ textAlign: 'right' }}>
+          <Tooltip title={t('chat.openSubagentSessionTip')}>
+            <Button
+              type="link"
+              size="small"
+              icon={<SendOutlined />}
+              iconPosition="end"
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenSession();
+              }}
+              style={{
+                padding: '0 4px',
+                fontSize: 12,
+                height: 'auto',
+                color: '#8c8c8c',
+              }}
+            >
+              {t('chat.openSubagentSession', { agent: delegation.subagent })}
+            </Button>
+          </Tooltip>
+        </div>
       )}
     </div>
+  );
+
+  return (
+    <CollapsibleBadge
+      icon={<RobotOutlined />}
+      label={t('chat.delegatedTo', { agent: delegation.subagent })}
+      color="#d48806"
+      bg="#fffbe6"
+      autoOpen={isRunning}
+      trailing={
+        isRunning ? (
+          <Tag
+            icon={<Spin size="small" style={{ fontSize: 10 }} />}
+            color="gold"
+            style={{ marginInlineEnd: 0, fontSize: 11, marginLeft: 4 }}
+          >
+            {lastTool?.name
+              ? `${t('chat.subagentRunning')} · ${lastTool.name}`
+              : t('chat.subagentRunning')}
+          </Tag>
+        ) : undefined
+      }
+    >
+      {body}
+    </CollapsibleBadge>
   );
 }
 
@@ -259,13 +408,13 @@ export function DelegationRecordPanel({
                   width: 9,
                   height: 9,
                   borderRadius: '50%',
-                  background: '#faad14',
+                  background: 'var(--google-chart-3)',
                   marginTop: 6,
-                  boxShadow: '0 0 0 3px #fffbe6',
+                  boxShadow: '0 0 0 3px var(--google-secondary)',
                 }}
               />
               {i < arr.length - 1 && (
-                <span style={{ width: 2, flex: 1, background: '#f0f0f0', margin: '2px 0' }} />
+                <span style={{ width: 2, flex: 1, background: 'var(--google-border)', margin: '2px 0' }} />
               )}
             </div>
             <div

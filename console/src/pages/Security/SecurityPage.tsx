@@ -2,10 +2,8 @@ import { useEffect, useState } from 'react';
 import {
   Alert,
   Button,
-  Card,
   Form,
   Select,
-  Space,
   Switch,
   Typography,
   message,
@@ -14,8 +12,10 @@ import { SafetyCertificateOutlined } from '@ant-design/icons';
 import { apiClient } from '../../api/client';
 import { useI18n } from '../../i18n';
 import { extractErrorMessage } from '../../utils/helpers';
+import GoogleCard from '../../components/GoogleCard';
+import GooglePageHeader from '../../components/GooglePageHeader';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 interface SecuritySettings {
   approval: {
@@ -75,26 +75,24 @@ export default function SecurityPage() {
   };
 
   return (
-    <div style={{ padding: 24 }}>
-      <Card loading={loading}>
-        <Space align="center" style={{ marginBottom: 4 }}>
-          <SafetyCertificateOutlined style={{ fontSize: 20, color: '#1677ff' }} />
-          <Title level={3} style={{ margin: 0 }}>
-            {t('security.title')}
-          </Title>
-        </Space>
-        <Text type="secondary">{t('security.subtitle')}</Text>
+    <div>
+      <GooglePageHeader
+        icon={<SafetyCertificateOutlined />}
+        title={t('security.title')}
+        subtitle={t('security.subtitle')}
+      />
 
-        <Form form={form} layout="vertical" style={{ marginTop: 24, maxWidth: 560 }}>
+      <GoogleCard loading={loading}>
+        <Form form={form} layout="vertical" style={{ marginTop: 'var(--google-space-8)', maxWidth: 560 }}>
           <Form.Item label={t('security.approvalCard')}>
-            <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+            <Text style={{ display: 'block', marginBottom: 'var(--google-space-3)', color: 'var(--google-muted-foreground)' }}>
               {t('security.approvalDesc')}
             </Text>
             <Form.Item name="enabled" valuePropName="checked" noStyle>
               <Switch checkedChildren="ON" unCheckedChildren="OFF" />
             </Form.Item>
-            <div style={{ marginTop: 8 }}>
-              <Text type="secondary" style={{ fontSize: 12 }}>
+            <div style={{ marginTop: 'var(--google-space-2)' }}>
+              <Text style={{ fontSize: 12, color: 'var(--google-muted-foreground)' }}>
                 {t('security.enableApprovalHelp')}
               </Text>
             </div>
@@ -113,14 +111,14 @@ export default function SecurityPage() {
             type="info"
             showIcon
             message={t('security.globalNote')}
-            style={{ marginBottom: 16 }}
+            style={{ marginBottom: 'var(--google-space-4)' }}
           />
 
           <Button type="primary" onClick={handleSave} loading={saving}>
             {t('security.save')}
           </Button>
         </Form>
-      </Card>
+      </GoogleCard>
     </div>
   );
 }

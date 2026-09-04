@@ -15,27 +15,19 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 
+from agentcore.runtime.agent_ids import known_agent_ids as _shared_known_agent_ids
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
-# Runtime states considered "running" for the dashboard counters.
-_RUNNING_STATES = frozenset({"running", "idle", "started"})
+# 新状态模型下 state 只有 idle/busy（派生事实）；仪表盘计数以 workspace 是否装载为准，
+# 不再依赖生命周期状态字段。
 
 
 def _known_agent_ids(request: Request) -> set[str]:
-    """All agent ids known to the system (loaded, persisted, or tracked)."""
-    ids: set[str] = set()
-    manager = getattr(request.app.state, "agent_manager", None)
-    if manager is not None:
-        ids.update(manager.list_workspaces())
-    store = getattr(request.app.state, "store", None)
-    if store is not None:
-        ids.update(getattr(store, "agent_states", {}).keys())
-    runtime = getattr(request.app.state, "runtime", None)
-    if runtime is not None:
-        ids.update(inst.agent_id for inst in runtime.list_agents())
-    return ids
+    """All persisted agent ids (see :mod:`agentcore.runtime.agent_ids`)."""
+    return _shared_known_agent_ids(request.app.state)
 
 
 def _agent_runtime_state(request: Request, agent_id: str) -> str | None:
@@ -77,7 +69,7 @@ async def get_stats(request: Request) -> dict[str, Any]:
         )
         state = _agent_runtime_state(request, agent_id)
         loaded = workspace is not None
-        if state in _RUNNING_STATES or loaded:
+        if loaded:
             running_count += 1
         agents.append(
             {

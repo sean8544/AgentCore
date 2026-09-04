@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shlex
 from typing import Any
 
@@ -72,7 +73,7 @@ def _connection_kwargs(server_cfg: dict[str, Any], backend: str) -> dict[str, An
         command = (server_cfg.get("command") or "").strip()
         if not command:
             raise ValueError("stdio transport requires a non-empty 'command'")
-        parts = shlex.split(command)
+        parts = shlex.split(command, posix=False) if os.name == 'nt' else shlex.split(command)
         if backend == "langchain_mcp_adapters":
             kwargs.update(
                 {
@@ -119,7 +120,12 @@ async def _fetch_via_adapters(server_cfg: dict[str, Any]) -> list[dict[str, Any]
 
     kwargs = _connection_kwargs(server_cfg, "langchain_mcp_adapters")
     client = MultiServerMCPClient({"probe": kwargs})
-    tools = await client.get_tools()
+    try:
+        tools = await client.get_tools()
+    except Exception:
+        # MultiServerMCPClient may raise TaskGroup errors on connection failure.
+        # Re-raise so the caller can handle it uniformly.
+        raise
     return [
         {
             "name": getattr(tool, "name", "") or "",
@@ -179,7 +185,10 @@ async def _fetch_via_mcp_sdk(server_cfg: dict[str, Any]) -> list[dict[str, Any]]
     return tools
 
 
-async def fetch_server_tools(server_cfg: dict[str, Any]) -> list[dict[str, Any]]:
+async def fetch_server_tools(
+    server_cfg: dict[str, Any],
+    timeout: float = MCP_CONNECT_TIMEOUT,
+) -> list[dict[str, Any]]:
     """Connect to one MCP server and return its tool list.
 
     Returns a list of ``{"name": ..., "description": ...}`` dicts.
@@ -202,7 +211,17 @@ async def fetch_server_tools(server_cfg: dict[str, Any]) -> list[dict[str, Any]]
         )
 
     fetcher = _fetch_via_adapters if backend == "langchain_mcp_adapters" else _fetch_via_mcp_sdk
-    return await asyncio.wait_for(fetcher(server_cfg), timeout=MCP_CONNECT_TIMEOUT)
+    try:
+        return await asyncio.wait_for(fetcher(server_cfg), timeout=timeout)
+    except asyncio.TimeoutError:
+        raise TimeoutError(
+            f"MCP 服务器连接超时（{timeout:.0f}s），请检查命令/地址是否正确，"
+            "或首次运行时需要下载依赖导致启动较慢"
+        ) from None
+    except ExceptionGroup as eg:
+        # anyio TaskGroup errors — extract the real cause for a cleaner message
+        causes = [str(e) for e in eg.exceptions]
+        raise RuntimeError(f"MCP 服务器启动失败: {'; '.join(causes)}") from None
 
 
 # ---------------------------------------------------------------------------
@@ -250,12 +269,33 @@ def load_mcp_tools_blocking(
     if not connections:
         return []
 
+    # Per-server timeout: each server gets MCP_CONNECT_TIMEOUT seconds.
+    # Overall timeout must cover all servers sequentially.
+    per_server_timeout = MCP_CONNECT_TIMEOUT
+    overall_timeout = per_server_timeout * max(len(connections), 1) + 10  # buffer
+
     async def _gather() -> list[Any]:
-        client = MultiServerMCPClient(connections)
-        return await client.get_tools()
+        # Load tools per-server so one failing server does not kill the rest.
+        # MultiServerMCPClient.get_tools() uses a TaskGroup internally —
+        # a single failure aborts the whole group.  By calling each server
+        # individually we get partial success.
+        all_tools: list[Any] = []
+        for sid, conn_kwargs in connections.items():
+            try:
+                single_client = MultiServerMCPClient({sid: conn_kwargs})
+                tools = await asyncio.wait_for(
+                    single_client.get_tools(), timeout=per_server_timeout
+                )
+                all_tools.extend(tools)
+            except Exception as exc:
+                logger.warning(
+                    "MCP server %r failed to load tools (skipped): %s",
+                    sid, exc,
+                )
+        return all_tools
 
     def _run() -> list[Any]:
-        return asyncio.run(asyncio.wait_for(_gather(), timeout=timeout))
+        return asyncio.run(asyncio.wait_for(_gather(), timeout=overall_timeout))
 
     try:
         try:
@@ -267,9 +307,17 @@ def load_mcp_tools_blocking(
             import concurrent.futures
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                tools = pool.submit(_run).result(timeout=timeout + 5)
+                tools = pool.submit(_run).result(timeout=overall_timeout + 10)
         logger.info("Injected %d MCP tool(s) from %d server(s)", len(tools), len(connections))
         return tools
+    except ExceptionGroup as eg:
+        # anyio TaskGroup errors — log and return empty (best-effort)
+        causes = [str(e) for e in eg.exceptions]
+        logger.warning(
+            "MCP tool loading failed — agent will start without MCP tools: %s",
+            "; ".join(causes),
+        )
+        return []
     except Exception as exc:  # noqa: BLE001 — MCP must never break agent creation
         logger.warning("MCP tool loading failed — agent will start without MCP tools: %s", exc)
         return []

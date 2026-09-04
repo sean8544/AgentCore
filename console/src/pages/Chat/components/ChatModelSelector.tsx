@@ -7,8 +7,6 @@ import { useI18n } from '../../../i18n';
 
 const { Text } = Typography;
 
-const ORANGE = '#FF7F16';
-
 /* ───────── Types ───────── */
 interface ModelItem {
   provider: string;
@@ -122,19 +120,19 @@ export default function ChatModelSelector() {
                 style={{
                   display: 'flex', alignItems: 'center', gap: 8,
                   padding: '7px 10px', borderRadius: 8, cursor: 'pointer',
-                  background: active ? '#fff3e8' : 'transparent',
-                  border: active ? '1px solid #ffd8b3' : '1px solid transparent',
+                  background: active ? 'rgba(66, 133, 244, 0.08)' : 'transparent',
+                  border: active ? '1px solid rgba(66, 133, 244, 0.25)' : '1px solid transparent',
                   opacity: saving !== null && !busy ? 0.6 : 1,
                 }}
               >
                 <span style={{
                   width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
-                  background: active ? ORANGE : '#d9d9d9',
+                  background: active ? 'var(--google-primary)' : 'var(--google-input)',
                 }} />
                 <span style={{ minWidth: 0 }}>
                   <span style={{
                     display: 'block', fontSize: 13,
-                    fontWeight: active ? 600 : 400, color: active ? ORANGE : '#333',
+                    fontWeight: active ? 600 : 400, color: active ? 'var(--google-primary)' : 'var(--google-foreground)',
                   }}>
                     {m.name}
                   </span>
@@ -147,7 +145,7 @@ export default function ChatModelSelector() {
                 <span style={{ marginLeft: 'auto', flexShrink: 0 }}>
                   {busy
                     ? <Spin size="small" />
-                    : active && <CheckOutlined style={{ color: ORANGE, fontSize: 12 }} />}
+                    : active && <CheckOutlined style={{ color: 'var(--google-primary)', fontSize: 12 }} />}
                 </span>
               </div>
             );
@@ -155,8 +153,8 @@ export default function ChatModelSelector() {
         </div>
       )}
       <div style={{
-        marginTop: 8, paddingTop: 6, borderTop: '1px solid #f0f0f0',
-        fontSize: 11, color: '#999',
+        marginTop: 8, paddingTop: 6, borderTop: '1px solid var(--google-border)',
+        fontSize: 11, color: 'var(--google-muted-foreground)',
       }}>
         {t('chat.switchNote')}
       </div>
@@ -177,19 +175,19 @@ export default function ChatModelSelector() {
         style={{
           display: 'inline-flex', alignItems: 'center', gap: 6,
           padding: '3px 10px', borderRadius: 8, cursor: 'pointer',
-          border: '1px solid #ffd8b3', background: '#fffaf4',
-          color: '#333', fontSize: 12, lineHeight: '22px',
+          border: '1px solid var(--google-primary)', background: 'rgba(66, 133, 244, 0.08)',
+          color: 'var(--google-primary)', fontSize: 12, lineHeight: '22px',
           maxWidth: 220,
         }}
       >
-        <ApiOutlined style={{ color: ORANGE, fontSize: 12 }} />
+        <ApiOutlined style={{ color: 'var(--google-primary)', fontSize: 12 }} />
         <span style={{
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           fontWeight: 500,
         }}>
           {loading ? t('common.loading') : currentModel ? currentModel.name : t('chat.modelNotConfigured')}
         </span>
-        <DownOutlined style={{ fontSize: 9, color: '#999' }} />
+        <DownOutlined style={{ fontSize: 9, color: 'var(--google-muted-foreground)' }} />
       </button>
     </Popover>
   );

@@ -1,22 +1,19 @@
-import { useState, type ReactNode } from 'react';
-import { Button, Tooltip, Typography } from 'antd';
+import { useMemo, type ReactNode } from 'react';
 import {
   CheckSquareOutlined,
   CodeOutlined,
   DeleteOutlined,
-  DownOutlined,
   EditOutlined,
   FileTextOutlined,
   FolderOpenOutlined,
   GlobalOutlined,
-  RightOutlined,
   RobotOutlined,
   SearchOutlined,
   ToolOutlined,
 } from '@ant-design/icons';
+import CollapsibleBadge from './CollapsibleBadge';
 import type { ToolCall } from '../../../stores/chatStore';
-
-const { Text } = Typography;
+import { useI18n } from '../../../i18n';
 
 /* ───────── Tool → icon / colour mapping ───────── */
 
@@ -31,11 +28,17 @@ function toolMeta(name: string): ToolMeta {
   if (n.includes('todo') || n.includes('plan')) {
     return { icon: <CheckSquareOutlined />, color: '#1677ff', bg: '#e6f4ff' };
   }
-  if (n.includes('write_file') || n.includes('edit_file') || n.includes('append_file') || n.includes('patch')) {
+  if (n.includes('write_file') || n.includes('append_file') || n.includes('patch')) {
     return { icon: <FileTextOutlined />, color: '#389e0d', bg: '#f6ffed' };
   }
-  if (n.includes('read_file') || n.includes('ls') || n.includes('glob') || n.includes('search') || n.includes('grep')) {
+  if (n.includes('edit_file') || n.includes('edit')) {
+    return { icon: <EditOutlined />, color: '#d46b08', bg: '#fff7e6' };
+  }
+  if (n.includes('read_file') || n.includes('glob') || n.includes('search') || n.includes('grep')) {
     return { icon: <SearchOutlined />, color: '#722ed1', bg: '#f9f0ff' };
+  }
+  if (n === 'ls' || n.includes('list') || n.includes('dir')) {
+    return { icon: <FolderOpenOutlined />, color: '#531dab', bg: '#f9f0ff' };
   }
   if (n.includes('bash') || n.includes('execute') || n.includes('terminal') || n.includes('shell')) {
     return { icon: <CodeOutlined />, color: '#fa8c16', bg: '#fff7e6' };
@@ -49,45 +52,50 @@ function toolMeta(name: string): ToolMeta {
   if (n.includes('http') || n.includes('request') || n.includes('fetch') || n.includes('web')) {
     return { icon: <GlobalOutlined />, color: '#08979c', bg: '#e6fffb' };
   }
-  if (n.includes('edit') || n.includes('write')) {
-    return { icon: <EditOutlined />, color: '#d46b08', bg: '#fff7e6' };
+  if (n.includes('write')) {
+    return { icon: <FileTextOutlined />, color: '#389e0d', bg: '#f6ffed' };
   }
-  if (n.includes('read') || n.includes('list') || n.includes('dir')) {
-    return { icon: <FolderOpenOutlined />, color: '#531dab', bg: '#f9f0ff' };
+  if (n.includes('read')) {
+    return { icon: <SearchOutlined />, color: '#722ed1', bg: '#f9f0ff' };
   }
   return { icon: <ToolOutlined />, color: '#595959', bg: '#f5f5f5' };
 }
 
-/* ───────── JSON syntax highlighting ───────── */
+/* ───────── JSON pretty-print with lightweight syntax colouring ───────── */
 
-const JSON_RE =
-  /"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null|[{}[\],:]|[^\s{}[\],:"]+/g;
+const JSON_TOKEN_RE =
+  /"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null|[{}[\],:]|\s+|[^\s{}[\],:"]+/g;
 
-function highlightJson(raw: string): ReactNode[] {
+function highlightJson(raw: string): ReactNode {
   let pretty = raw;
   try {
     pretty = JSON.stringify(JSON.parse(raw), null, 2);
   } catch {
-    // keep the raw text when it is not valid JSON
+    // keep raw when it is not valid JSON (partial streaming chunk etc.)
   }
-  const tokens = pretty.match(JSON_RE) ?? [];
+  const tokens = pretty.match(JSON_TOKEN_RE) ?? [];
+  if (!tokens.length) return pretty;
   const parts: ReactNode[] = [];
-  let key = 0;
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i];
-    let color = '#595959'; // punctuation / structure
+    let color = '#595959';
     if (/^".*"$/.test(token)) {
-      const isKey = tokens[i + 1] === ':';
-      color = isKey ? '#c41d7f' : '#389e0d'; // key / string value
+      // string: is it a key (followed by `:`)?
+      let j = i + 1;
+      while (j < tokens.length && /^\s+$/.test(tokens[j])) j += 1;
+      const isKey = tokens[j] === ':';
+      color = isKey ? '#c41d7f' : '#389e0d';
     } else if (/^-?\d/.test(token)) {
-      color = '#1677ff'; // number
+      color = '#1677ff';
     } else if (token === 'true' || token === 'false') {
-      color = '#d48806'; // boolean
+      color = '#d48806';
     } else if (token === 'null') {
-      color = '#8c8c8c'; // null
+      color = '#8c8c8c';
+    } else if (/^\s+$/.test(token)) {
+      color = 'inherit';
     }
     parts.push(
-      <span key={key++} style={{ color }}>
+      <span key={i} style={{ color }}>
         {token}
       </span>,
     );
@@ -97,111 +105,64 @@ function highlightJson(raw: string): ReactNode[] {
 
 /* ───────── Component ───────── */
 
+/**
+ * Compact tool-call badge — icon + name, click to expand args.
+ *
+ * Always renders collapsed; the user has to click to reveal the
+ * JSON arguments.  This keeps long tool-heavy turns visually light
+ * while preserving full inspectability on demand.
+ */
 export default function ToolCallCard({ call }: { call: ToolCall }) {
-  const [open, setOpen] = useState(false);
+  const { t } = useI18n();
   const meta = toolMeta(call.name);
-  const hasArgs = !!call.args && call.args.trim() !== '' && call.args.trim() !== '{}';
+  const args = call.args ?? '';
 
-  return (
-    <div
-      style={{
-        border: '1px solid #f0f0f0',
-        borderLeft: `3px solid ${meta.color}`,
-        borderRadius: 10,
-        background: '#fff',
-        marginBottom: 8,
-        overflow: 'hidden',
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '6px 10px',
-          cursor: hasArgs ? 'pointer' : 'default',
-          background: '#fafafa',
-        }}
-        onClick={hasArgs ? () => setOpen((v) => !v) : undefined}
-      >
-        <span
+  const body = useMemo(() => {
+    if (!args) return null;
+    return (
+      <div>
+        <div
           style={{
-            width: 22,
-            height: 22,
-            borderRadius: 6,
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            background: meta.bg,
-            color: meta.color,
-            fontSize: 13,
-            flexShrink: 0,
+            fontSize: 11,
+            color: '#8c8c8c',
+            marginBottom: 4,
+            textTransform: 'uppercase',
+            letterSpacing: 0.4,
           }}
         >
-          {meta.icon}
-        </span>
-        <Text code style={{ fontSize: 12.5, color: '#333' }}>
-          {call.name}
-        </Text>
-        {hasArgs && (
-          <Text
-            type="secondary"
-            style={{
-              fontSize: 12,
-              flex: 1,
-              minWidth: 0,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              color: '#999',
-            }}
-          >
-            {call.args.length > 90 ? `${call.args.slice(0, 90)}…` : call.args}
-          </Text>
-        )}
-        {hasArgs ? (
-          <Button
-            type="text"
-            size="small"
-            icon={
-              open ? (
-                <DownOutlined style={{ fontSize: 11, color: '#bbb' }} />
-              ) : (
-                <RightOutlined style={{ fontSize: 11, color: '#bbb' }} />
-              )
-            }
-            style={{ padding: 0, width: 22, height: 22, flexShrink: 0 }}
-            onClick={(e) => {
-              e.stopPropagation();
-              setOpen((v) => !v);
-            }}
-          />
-        ) : (
-          <Tooltip title={call.name}>
-            <span style={{ width: 22, height: 22, flexShrink: 0 }} />
-          </Tooltip>
-        )}
-      </div>
-
-      {open && hasArgs && (
+          {t('chat.toolArgs')}
+        </div>
         <pre
           style={{
             margin: 0,
-            padding: '10px 14px',
-            background: '#fff',
-            borderTop: '1px dashed #f0f0f0',
-            fontSize: 12,
-            lineHeight: 1.7,
-            fontFamily: 'Menlo, Consolas, monospace',
-            maxHeight: 320,
-            overflow: 'auto',
+            padding: '6px 8px',
+            background: '#fafafa',
+            border: '1px solid #f0f0f0',
+            borderRadius: 6,
+            fontSize: 11.5,
+            lineHeight: 1.55,
+            fontFamily:
+              "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
             whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
+            wordBreak: 'break-all',
+            maxHeight: 240,
+            overflow: 'auto',
           }}
         >
-          {highlightJson(call.args)}
+          {highlightJson(args)}
         </pre>
-      )}
-    </div>
+      </div>
+    );
+  }, [args, t]);
+
+  return (
+    <CollapsibleBadge
+      icon={meta.icon}
+      label={call.name}
+      color={meta.color}
+      bg={meta.bg}
+    >
+      {body}
+    </CollapsibleBadge>
   );
 }

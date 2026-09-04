@@ -8,6 +8,12 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // 实例挂载前缀（AGENTCORE_BASE_PATH），由后端运行时替换占位符；
+      // 根路径部署时替换为空字符串。必须早于应用 bundle 加载。
+      // 用拼接写法避免占位符出现在变量名中导致被自我替换。
+      window['__AGENTCORE' + '_BASE_PATH__'] = '__AGENTCORE_BASE_PATH__';
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

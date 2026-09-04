@@ -32,6 +32,7 @@ from pydantic import BaseModel
 from agentcore.runtime import paths
 from agentcore.runtime import model_store
 from agentcore.runtime.agent_ids import known_agent_ids
+from agentcore.runtime.model_factory import forced_gateway_headers
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,34 @@ def _resolve_api_key(api_key_env: str | None) -> str | None:
         if value and value.strip():
             return value.strip()
     return None
+
+
+def _friendly_probe_error(exc: Exception) -> str:
+    """Translate common upstream failures into actionable hints.
+
+    Keeps a truncated copy of the raw upstream message so debugging
+    stays possible while the leading sentence tells the user what to do.
+    """
+    text = str(exc)
+    raw = text if len(text) <= 200 else f"{text[:200]}…"
+    status = getattr(exc, "status_code", None)
+    if status in (401, 403):
+        return (
+            f"认证失败（{status}）：API Key 无效、过期或无权限访问该端点，"
+            f"请检查密钥。上游信息：{raw}"
+        )
+    if status == 429 or "RateLimitError" in type(exc).__name__:
+        lowered = text.lower()
+        if "quota" in lowered or "insufficient" in lowered:
+            return (
+                "该模型配额已用尽（429）：服务商侧的额度/窗口限制已触顶"
+                "（免费模型常见，如每 5 小时滚动额度），请等待额度刷新或更换模型。"
+                f"上游信息：{raw}"
+            )
+        return f"触发服务商限流（429）：请求过于频繁，请稍后重试。上游信息：{raw}"
+    if status == 404:
+        return f"端点或模型不存在（404）：请核对 Base URL 与模型名。上游信息：{raw}"
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +301,9 @@ async def test_model(payload: ModelTestRequest) -> dict[str, Any]:
     for header in payload.headers or []:
         if isinstance(header, dict) and header.get("key"):
             headers[str(header["key"])] = str(header.get("value") or "")
+    # Gateways behind Cloudflare bot protection (e.g. opencode.ai/zen)
+    # reject the default client User-Agent with a 403; inject a browser UA.
+    headers = {**forced_gateway_headers(base_url), **headers}
 
     def _probe() -> tuple[str, list[str], str | None]:
         kwargs: dict[str, Any] = {
@@ -296,7 +328,14 @@ async def test_model(payload: ModelTestRequest) -> dict[str, Any]:
         # Best-effort available-model list (some gateways disable /models).
         names: list[str] = []
         try:
-            probe_client = OpenAI(base_url=base_url, api_key=api_key, timeout=10.0)
+            probe_kwargs: dict[str, Any] = {
+                "base_url": base_url,
+                "api_key": api_key,
+                "timeout": 10.0,
+            }
+            if headers:
+                probe_kwargs["default_headers"] = headers
+            probe_client = OpenAI(**probe_kwargs)
             try:
                 page = probe_client.models.list()
                 names = [getattr(m, "id", "") for m in page.data]
@@ -322,7 +361,7 @@ async def test_model(payload: ModelTestRequest) -> dict[str, Any]:
             "result": "failed",
             "name": payload.name,
             "base_url": base_url,
-            "error": str(exc),
+            "error": _friendly_probe_error(exc),
         }
 
     return {

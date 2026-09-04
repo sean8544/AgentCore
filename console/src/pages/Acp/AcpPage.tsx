@@ -1,16 +1,18 @@
-import { Card, Typography } from 'antd';
+import { Typography } from 'antd';
 import { useI18n } from '../../i18n';
+import GoogleCard from '../../components/GoogleCard';
+import GooglePageHeader from '../../components/GooglePageHeader';
 
-const { Title, Paragraph } = Typography;
+const { Paragraph } = Typography;
 
 export default function AcpPage() {
   const { t } = useI18n();
   return (
-    <div style={{ padding: 24 }}>
-      <Card>
-        <Title level={3}>ACP</Title>
+    <div>
+      <GooglePageHeader title="ACP" subtitle={t('common.comingSoon')} />
+      <GoogleCard>
         <Paragraph>{t('common.comingSoon')}</Paragraph>
-      </Card>
+      </GoogleCard>
     </div>
   );
 }

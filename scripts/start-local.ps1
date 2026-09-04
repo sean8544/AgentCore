@@ -78,34 +78,40 @@ if ($InstallDevDeps) {
 if ($LASTEXITCODE -ne 0) { throw "后端依赖安装失败" }
 
 # -----------------------------------------------------------------------------
-# 4. 前端依赖检查 + 模式判定
+# 4. 前端依赖检查 + 构建（每次启动都重新 build 确保最新代码生效）
 #    console/dist 存在 → 生产模式：后端直接托管静态文件，不启动 dev server
 # -----------------------------------------------------------------------------
 $ConsoleDir = Join-Path $Root "console"
 $ConsoleDist = Join-Path $ConsoleDir "dist"
-$ProductionMode = Test-Path (Join-Path $ConsoleDist "index.html")
 
-if ($ProductionMode) {
-    Write-Step "检测到 console/dist —— 生产模式：由后端托管前端静态文件"
-} else {
-    Write-Step "开发模式：console/dist 不存在，将并行启动 vite dev server"
-    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-        throw "未找到 npm。开发模式需要 Node.js，请先安装，或先执行 npm run build 生成 console/dist。"
-    }
-    $NodeModules = Join-Path $ConsoleDir "node_modules"
-    if (-not (Test-Path $NodeModules)) {
-        Write-Step "console/node_modules 不存在，执行 npm install ..."
-        Push-Location $ConsoleDir
-        try {
-            & npm install
-            if ($LASTEXITCODE -ne 0) { throw "npm install 失败" }
-        } finally {
-            Pop-Location
-        }
-    } else {
-        Write-Step "前端依赖已就绪 (console/node_modules)"
-    }
+if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    throw "未找到 npm。请安装 Node.js。"
 }
+$NodeModules = Join-Path $ConsoleDir "node_modules"
+if (-not (Test-Path $NodeModules)) {
+    Write-Step "console/node_modules 不存在，执行 npm install ..."
+    Push-Location $ConsoleDir
+    try {
+        & npm install
+        if ($LASTEXITCODE -ne 0) { throw "npm install 失败" }
+    } finally {
+        Pop-Location
+    }
+} else {
+    Write-Step "前端依赖已就绪 (console/node_modules)"
+}
+
+# 每次启动都重新构建前端，确保最新代码生效
+Write-Step "构建前端 (npm run build) ..."
+Push-Location $ConsoleDir
+try {
+    & npm run build
+    if ($LASTEXITCODE -ne 0) { throw "前端构建失败" }
+} finally {
+    Pop-Location
+}
+$ProductionMode = $true
+Write-Step "前端构建完成 —— 生产模式：由后端托管前端静态文件"
 
 # -----------------------------------------------------------------------------
 # 5. 并行启动后端 + 前端（后台进程，日志写入 logs/）

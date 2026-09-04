@@ -1,16 +1,19 @@
-import { Card, Typography } from 'antd';
+import { ApartmentOutlined } from '@ant-design/icons';
+import GoogleCard from '../../components/GoogleCard';
+import GooglePageHeader from '../../components/GooglePageHeader';
 import { useI18n } from '../../i18n';
-
-const { Title, Paragraph } = Typography;
 
 export default function ChannelsPage() {
   const { t } = useI18n();
   return (
-    <div style={{ padding: 24 }}>
-      <Card>
-        <Title level={3}>{t('menu.channels')}</Title>
-        <Paragraph>{t('common.comingSoon')}</Paragraph>
-      </Card>
+    <div>
+      <GooglePageHeader
+        icon={<ApartmentOutlined />}
+        title={t('menu.channels')}
+      />
+      <GoogleCard>
+        {t('common.comingSoon')}
+      </GoogleCard>
     </div>
   );
 }

@@ -4,5 +4,6 @@
   "currentAgent": "当前 Agent",
   "tool": "工具",
   "builtin": "内置",
+  "capability": "能力",
   "loadFailed": "工具列表加载失败"
 }

@@ -54,6 +54,27 @@ def _move_with_retry(src: Path, dst: Path, attempts: int = 3) -> None:
             time.sleep(0.2 * attempt)
 
 
+def _rmtree_with_retry(path: Path, attempts: int = 3) -> None:
+    """Remove a directory tree, retrying briefly on Windows file-lock errors.
+
+    Windows antivirus / search-indexer locks can cause ``rmtree`` to fail
+    or silently skip files (with ``ignore_errors=True``).  A short retry
+    loop with a back-off gives the lock holder time to release.
+    """
+    for attempt in range(1, attempts + 1):
+        shutil.rmtree(path, ignore_errors=True)
+        if not path.exists():
+            return
+        # Directory still exists — some files were locked.
+        if attempt < attempts:
+            time.sleep(0.3 * attempt)
+    # Final attempt without ignore_errors to surface the real error.
+    try:
+        shutil.rmtree(path)
+    except OSError:
+        logger.warning("Failed to fully remove directory: %s", path)
+
+
 def migrate_workspace_layout() -> None:
     """一次性迁移旧目录结构 ``.agentcore/workspaces/`` → 新布局。
 
@@ -416,8 +437,14 @@ class MultiAgentManager:
         # 清理磁盘上的工作区目录（即使 workspace 未加载也执行）。
         workspace_dir = self._workspace_dir_for(agent_id)
         if workspace_dir.exists():
-            shutil.rmtree(workspace_dir, ignore_errors=True)
-            logger.info("Removed workspace directory for agent %s", agent_id)
+            _rmtree_with_retry(workspace_dir)
+            if not workspace_dir.exists():
+                logger.info("Removed workspace directory for agent %s", agent_id)
+            else:
+                logger.warning(
+                    "Workspace directory for agent %s still exists after removal attempt",
+                    agent_id,
+                )
 
     # ------------------------------------------------------------------
     # Hot reload

@@ -10,6 +10,7 @@
   "requestCount": "请求次数",
   "dailyTrend": "每日趋势",
   "agentBreakdown": "按 Agent 统计",
+  "modelBreakdown": "按模型统计",
   "dailyDetail": "每日明细",
   "date": "日期",
   "input": "输入",
@@ -17,5 +18,6 @@
   "total": "合计",
   "requests": "请求数",
   "noData": "加载中…",
-  "noDataAvailable": "暂无数据"
+  "noDataAvailable": "暂无数据",
+  "overview": "概览"
 }

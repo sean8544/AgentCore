@@ -1,0 +1,17 @@
+{
+  "desc": "View backend runtime logs to help diagnose issues. Logs refresh automatically while this page is open.",
+  "backendTitle": "Backend logs",
+  "newestFirst": "Newest first",
+  "autoRefresh": "Auto refresh",
+  "levelAll": "All levels",
+  "searchPlaceholder": "Search backend logs...",
+  "updatedAt": "Updated at",
+  "logPath": "Log file",
+  "copy": "Copy logs",
+  "copied": "Logs copied to clipboard",
+  "copyFailed": "Failed to copy logs",
+  "refreshSuccess": "Logs refreshed",
+  "loadFailed": "Failed to load backend logs",
+  "notFound": "Backend log file was not found yet. Make sure the backend is running.",
+  "placeholder": "Backend log output will appear here."
+}

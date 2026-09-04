@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentCore - Google Design Preview</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --google-background: #ffffff;
+      --google-foreground: #0e1115;
+      --google-card: #ffffff;
+      --google-border: #ebebeb;
+      --google-primary: #4285f4;
+      --google-primary-foreground: #ffffff;
+      --google-secondary: #dbeafe;
+      --google-secondary-foreground: #333942;
+      --google-muted: #eff1f4;
+      --google-muted-foreground: #7f8d9f;
+      --google-sidebar: #f0f6ff;
+      --google-sidebar-border: #e7eaef;
+      --google-sidebar-accent: #dbeafe;
+      --google-radius: 0.5rem;
+      --google-font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+      --google-font-mono: "JetBrains Mono", ui-monospace, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--google-font-sans);
+      color: var(--google-foreground);
+      background: var(--google-background);
+    }
+
+    .app { display: flex; height: 100vh; }
+
+    .sider {
+      width: 220px;
+      background: var(--google-sidebar);
+      border-right: 1px solid var(--google-sidebar-border);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .logo {
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      font-weight: 600;
+      border-bottom: 1px solid var(--google-sidebar-border);
+    }
+
+    .agent-selector {
+      padding: 12px;
+    }
+
+    .agent-pill {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: var(--google-card);
+      border: 1px solid var(--google-border);
+      border-radius: var(--google-radius);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .avatar {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      background: var(--google-primary);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .menu { padding: 8px 0; }
+    .menu-group {
+      padding: 8px 20px 4px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--google-muted-foreground);
+    }
+    .menu-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 4px 8px;
+      padding: 9px 12px;
+      border-radius: 6px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: background 150ms ease;
+    }
+    .menu-item:hover { background: var(--google-sidebar-accent); }
+    .menu-item.active {
+      background: var(--google-primary);
+      color: var(--google-primary-foreground);
+    }
+
+    .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    .header {
+      height: 64px;
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      border-bottom: 1px solid var(--google-border);
+      background: var(--google-background);
+    }
+    .toggle {
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .toggle:hover { background: var(--google-muted); }
+
+    .content {
+      flex: 1;
+      margin: 24px;
+      padding: 24px;
+      background: var(--google-card);
+      border: 1px solid var(--google-border);
+      border-radius: var(--google-radius);
+      overflow: auto;
+    }
+
+    h1 { font-size: 24px; font-weight: 600; margin: 0 0 8px; }
+    .subtitle { color: var(--google-muted-foreground); margin-bottom: 24px; }
+
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+    .stat-card {
+      padding: 16px;
+      border: 1px solid var(--google-border);
+      border-radius: var(--google-radius);
+    }
+    .stat-label { font-size: 12px; color: var(--google-muted-foreground); margin-bottom: 6px; }
+    .stat-value { font-size: 28px; font-weight: 700; }
+    .stat-delta { font-size: 12px; color: #34a853; margin-top: 4px; font-weight: 500; }
+
+    .panel {
+      border: 1px solid var(--google-border);
+      border-radius: var(--google-radius);
+      padding: 16px;
+    }
+    .panel h2 { font-size: 16px; margin: 0 0 16px; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 16px;
+      border-radius: var(--google-radius);
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: opacity 150ms ease;
+    }
+    .btn-primary { background: var(--google-primary); color: var(--google-primary-foreground); }
+    .btn-secondary { background: var(--google-secondary); color: var(--google-secondary-foreground); }
+    .btn-ghost { background: #fff; border-color: var(--google-border); color: var(--google-foreground); }
+    .btn:hover { opacity: 0.92; }
+
+    .table { width: 100%; border-collapse: collapse; }
+    .table th, .table td { text-align: left; padding: 12px; border-bottom: 1px solid var(--google-border); font-size: 14px; }
+    .table th { background: #f9f9fa; font-weight: 600; }
+    .table tr:hover { background: var(--google-sidebar); }
+    .tag {
+      display: inline-flex;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .tag-green { background: #e6f4ea; color: #1e8e3e; }
+    .tag-blue { background: #e8f0fe; color: #1967d2; }
+    .tag-red { background: #fce8e8; color: #d93025; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sider">
+      <div class="logo">AgentCore</div>
+      <div class="agent-selector">
+        <div class="agent-pill">
+          <div class="avatar">D</div>
+          <span>default-agent</span>
+        </div>
+      </div>
+      <div class="menu">
+        <div class="menu-group">Control</div>
+        <div class="menu-item active">
+          <span>💬</span> Chat
+        </div>
+        <div class="menu-item">
+          <span>✉️</span> Inbox
+        </div>
+        <div class="menu-item">
+          <span>📡</span> Channels
+        </div>
+        <div class="menu-group">Workspace</div>
+        <div class="menu-item">
+          <span>📁</span> Files
+        </div>
+        <div class="menu-item">
+          <span>⚡</span> Skills
+        </div>
+        <div class="menu-item">
+          <span>🛠️</span> Tools
+        </div>
+      </div>
+    </aside>
+    <main class="main">
+      <header class="header">
+        <div class="toggle">☰</div>
+      </header>
+      <section class="content">
+        <h1>Overview</h1>
+        <p class="subtitle">Dashboard rebuilt with Google design tokens.</p>
+
+        <div class="stats">
+          <div class="stat-card">
+            <div class="stat-label">Active agents</div>
+            <div class="stat-value">12</div>
+            <div class="stat-delta">+2 this week</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Sessions today</div>
+            <div class="stat-value">348</div>
+            <div class="stat-delta">+18%</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Avg. response</div>
+            <div class="stat-value">1.2s</div>
+            <div class="stat-delta">-0.3s</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Token usage</div>
+            <div class="stat-value">84%</div>
+            <div class="stat-delta">Within budget</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Recent sessions</h2>
+          <div style="margin-bottom: 16px;">
+            <button class="btn btn-primary">New session</button>
+            <button class="btn btn-secondary" style="margin-left: 8px;">Export</button>
+            <button class="btn btn-ghost" style="margin-left: 8px;">Filter</button>
+          </div>
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Agent</th>
+                <th>Status</th>
+                <th>Started</th>
+                <th>Messages</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>default-agent</strong></td>
+                <td><span class="tag tag-green">Running</span></td>
+                <td>08:42</td>
+                <td>24</td>
+              </tr>
+              <tr>
+                <td><strong>research-agent</strong></td>
+                <td><span class="tag tag-blue">Idle</span></td>
+                <td>Yesterday</td>
+                <td>156</td>
+              </tr>
+              <tr>
+                <td><strong>debug-agent</strong></td>
+                <td><span class="tag tag-red">Error</span></td>
+                <td>2 days ago</td>
+                <td>8</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

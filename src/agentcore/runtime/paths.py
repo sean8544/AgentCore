@@ -48,3 +48,81 @@ def get_skill_pool_dir() -> Path:
 def get_checkpoints_path() -> Path:
     """获取 checkpointer 数据库路径。"""
     return get_data_dir() / "checkpoints.db"
+
+
+def get_project_root() -> Path:
+    """获取项目根目录（``src/agentcore/runtime`` 向上三级）。"""
+    return Path(__file__).resolve().parents[3]
+
+
+def get_backend_log_file() -> Path:
+    """获取后端文件日志路径：``<project-root>/logs/backend.log``。
+
+    无论以何种方式启动（脚本重定向 / 直接运行），后端都会通过
+    ``debug_router.setup_file_logging()`` 写入该文件，供调试页面读取。
+    """
+    return get_project_root() / "logs" / "backend.log"
+
+
+# ---------------------------------------------------------------------------
+# Checkpointer 后端配置（SQLite / PostgreSQL）
+# ---------------------------------------------------------------------------
+
+
+def get_checkpointer_backend() -> str:
+    """获取 checkpointer 后端类型：``sqlite`` | ``postgresql``。
+
+    通过环境变量 ``AGENTCORE_CHECKPOINTER_BACKEND`` 配置，默认 ``sqlite``。
+    """
+    return os.environ.get("AGENTCORE_CHECKPOINTER_BACKEND", "sqlite").lower()
+
+
+def is_postgres_enabled() -> bool:
+    """判断是否启用 PostgreSQL 作为 checkpointer 后端。"""
+    return get_checkpointer_backend() == "postgresql"
+
+
+def get_postgres_host() -> str:
+    """获取 PostgreSQL 主机地址。"""
+    return os.environ.get("AGENTCORE_POSTGRES_HOST", "localhost")
+
+
+def get_postgres_port() -> str:
+    """获取 PostgreSQL 端口。"""
+    return os.environ.get("AGENTCORE_POSTGRES_PORT", "5432")
+
+
+def get_postgres_db() -> str:
+    """获取 PostgreSQL 数据库名。"""
+    return os.environ.get("AGENTCORE_POSTGRES_DB", "agentcore")
+
+
+def get_postgres_user() -> str:
+    """获取 PostgreSQL 用户名。"""
+    return os.environ.get("AGENTCORE_POSTGRES_USER", "agentcore")
+
+
+def get_postgres_password() -> str:
+    """获取 PostgreSQL 密码。"""
+    return os.environ.get("AGENTCORE_POSTGRES_PASSWORD", "agentcore_secret")
+
+
+def get_postgres_connection_string() -> str:
+    """构建 PostgreSQL 连接字符串。
+
+    格式：postgresql://user:password@host:port/dbname
+
+    也可以通过 ``AGENTCORE_POSTGRES_URL`` 环境变量直接指定完整连接字符串。
+    """
+    # 优先使用完整连接字符串
+    url = os.environ.get("AGENTCORE_POSTGRES_URL")
+    if url:
+        return url
+
+    # 否则构建连接字符串
+    user = get_postgres_user()
+    password = get_postgres_password()
+    host = get_postgres_host()
+    port = get_postgres_port()
+    db = get_postgres_db()
+    return f"postgresql://{user}:{password}@{host}:{port}/{db}"

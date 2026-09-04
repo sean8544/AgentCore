@@ -10,6 +10,8 @@
   "systemPromptExtra": "保存后下一次对话生效（Agent 图会被重建）",
   "save": "保存",
   "saveSuccess": "设置已保存，下一次对话生效",
+  "restore": "还原",
+  "restored": "已还原为上次保存的内容",
   "supervisorTag": "主 Agent（可委派）",
   "subagentTag": "子 Agent",
   "topology": "委派拓扑",

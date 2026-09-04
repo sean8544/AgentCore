@@ -1,0 +1,23 @@
+{
+  "title": "Agent 技能",
+  "subtitle": "{{agent}} 已安装 {{count}} 个技能 · 启停即时生效",
+  "goToPool": "前往技能池",
+  "enabledSection": "已启用技能",
+  "disabledSection": "已禁用技能",
+  "noEnabled": "没有已启用的技能",
+  "view": "查看",
+  "uninstall": "卸载",
+  "uninstallConfirm": "从当前 Agent 卸载 {{skill}}？技能池中的原件不受影响。",
+  "uninstallSuccess": "已卸载 {{name}}",
+  "uninstallFailed": "卸载失败，请重试",
+  "enableSuccess": "已启用 {{name}}",
+  "disableSuccess": "已禁用 {{name}}",
+  "toggleFailed": "切换失败，请重试",
+  "noDescription": "暂无描述",
+  "empty": "尚未安装任何技能",
+  "emptyHint": "技能安装后注入 Agent 的系统提示词，按需渐进式加载",
+  "loadFailed": "技能列表加载失败",
+  "contentLoadFailed": "技能内容加载失败",
+  "detail": "技能详情",
+  "detailTitle": "技能：{{name}}"
+}

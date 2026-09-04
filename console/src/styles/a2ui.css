@@ -1,0 +1,219 @@
+/* A2UI basic-catalog component styles — adapted & scoped to the card.
+ *
+ * The official @a2ui/react bundle ships its CSS-module class maps empty
+ * (they expect the consumer bundler to compile *.module.css); the vite
+ * plugin `shimA2uiCssModules` (console/vite.config.ts) replaces them with a
+ * property-echo proxy so the plain class names below land on the DOM.
+ * Class names are intentionally generic in the official renderer, hence
+ * every rule is scoped under [data-testid='a2ui-card'].
+ *
+ * Theming maps the catalog's --a2ui-* variables onto the app's google
+ * design tokens so interactive cards match the console look & feel. */
+
+[data-testid='a2ui-card'] {
+  --a2ui-color-background: var(--google-card);
+  --a2ui-color-on-background: var(--google-foreground);
+  --a2ui-color-surface: var(--google-card);
+  --a2ui-color-on-surface: var(--google-foreground);
+  --a2ui-color-primary: var(--google-primary);
+  --a2ui-color-primary-hover: color-mix(in srgb, var(--google-primary) 84%, #000);
+  --a2ui-color-on-primary: var(--google-primary-foreground);
+  --a2ui-color-secondary: var(--google-muted);
+  --a2ui-color-secondary-hover: color-mix(in srgb, var(--google-muted) 70%, var(--google-border));
+  --a2ui-color-on-secondary: var(--google-foreground);
+  --a2ui-color-border: var(--google-border);
+  --a2ui-color-border-hover: color-mix(in srgb, var(--google-primary) 45%, var(--google-border));
+  --a2ui-color-input: var(--google-card);
+  --a2ui-color-on-input: var(--google-foreground);
+  --a2ui-border-radius: var(--google-radius-md);
+  --a2ui-font-size-m: 13.5px;
+  --a2ui-font-size-s: 12.5px;
+  --a2ui-font-size-xs: 12px;
+  color: var(--google-foreground);
+}
+
+/* ── Text ─────────────────────────────────────────────── */
+[data-testid='a2ui-card'] .a2uiText {
+  display: inline-block;
+  color: var(--a2ui-color-on-background);
+  margin: 0;
+  box-sizing: border-box;
+}
+[data-testid='a2ui-card'] .a2uiCaption {
+  color: var(--google-muted-foreground);
+}
+[data-testid='a2ui-card'] .a2uiText p,
+[data-testid='a2ui-card'] .a2uiText h1,
+[data-testid='a2ui-card'] .a2uiText h2,
+[data-testid='a2ui-card'] .a2uiText h3,
+[data-testid='a2ui-card'] .a2uiText h4,
+[data-testid='a2ui-card'] .a2uiText h5,
+[data-testid='a2ui-card'] .a2uiText h6,
+[data-testid='a2ui-card'] .a2uiText ol,
+[data-testid='a2ui-card'] .a2uiText ul,
+[data-testid='a2ui-card'] .a2uiText li,
+[data-testid='a2ui-card'] .a2uiText blockquote,
+[data-testid='a2ui-card'] .a2uiText pre {
+  margin: 0;
+}
+[data-testid='a2ui-card'] .a2uiText h1,
+[data-testid='a2ui-card'] .a2uiText h2,
+[data-testid='a2ui-card'] .a2uiText h3,
+[data-testid='a2ui-card'] .a2uiText h4,
+[data-testid='a2ui-card'] .a2uiText h5 {
+  line-height: 1.3;
+  font-weight: 600;
+}
+[data-testid='a2ui-card'] .a2uiText h1 { font-size: 20px; }
+[data-testid='a2ui-card'] .a2uiText h2 { font-size: 17px; }
+[data-testid='a2ui-card'] .a2uiText h3 { font-size: 15px; }
+[data-testid='a2ui-card'] .a2uiText p,
+[data-testid='a2ui-card'] .a2uiText h4 { font-size: 13.5px; }
+[data-testid='a2ui-card'] .a2uiText h5 { font-size: 12.5px; }
+[data-testid='a2ui-card'] .a2uiText p,
+[data-testid='a2ui-card'] .a2uiText ol,
+[data-testid='a2ui-card'] .a2uiText ul,
+[data-testid='a2ui-card'] .a2uiText li,
+[data-testid='a2ui-card'] .a2uiText blockquote {
+  line-height: 1.6;
+}
+[data-testid='a2ui-card'] .a2uiText a {
+  color: var(--google-primary);
+}
+
+/* ── Button ───────────────────────────────────────────── */
+[data-testid='a2ui-card'] .button {
+  padding: 6px 18px;
+  margin: 4px 8px 4px 0;
+  background: var(--google-card);
+  color: var(--google-foreground);
+  border: 1px solid var(--google-border);
+  border-radius: var(--google-radius-md);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.2s, border-color 0.2s, box-shadow 0.2s;
+}
+[data-testid='a2ui-card'] .button:hover {
+  background: var(--google-muted);
+  border-color: var(--a2ui-color-border-hover);
+}
+[data-testid='a2ui-card'] .button.primary {
+  background: var(--google-primary);
+  border-color: var(--google-primary);
+  color: var(--google-primary-foreground);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.15);
+}
+[data-testid='a2ui-card'] .button.primary:hover {
+  background: var(--a2ui-color-primary-hover);
+}
+[data-testid='a2ui-card'] .button.borderless {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--google-primary);
+}
+[data-testid='a2ui-card'] .button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* ── TextField / ChoicePicker shared layout ───────────── */
+[data-testid='a2ui-card'] .host {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+[data-testid='a2ui-card'] .label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--google-foreground);
+}
+[data-testid='a2ui-card'] .input,
+[data-testid='a2ui-card'] .filterInput {
+  background: var(--google-card);
+  color: var(--google-foreground);
+  border: 1px solid var(--google-border);
+  border-radius: var(--google-radius-md);
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  box-sizing: border-box;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+[data-testid='a2ui-card'] .input {
+  width: 100%;
+}
+[data-testid='a2ui-card'] .input:hover,
+[data-testid='a2ui-card'] .filterInput:hover {
+  border-color: var(--a2ui-color-border-hover);
+}
+[data-testid='a2ui-card'] .input:focus,
+[data-testid='a2ui-card'] .filterInput:focus {
+  outline: none;
+  border-color: var(--google-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--google-primary) 18%, transparent);
+}
+[data-testid='a2ui-card'] .input.invalid {
+  border-color: #ff4d4f !important;
+}
+[data-testid='a2ui-card'] .error {
+  color: #ff4d4f;
+  font-size: 12px;
+}
+
+/* ── ChoicePicker options & chips ─────────────────────── */
+[data-testid='a2ui-card'] .options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+[data-testid='a2ui-card'] .options.chips {
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+[data-testid='a2ui-card'] .optionLabel {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+[data-testid='a2ui-card'] .optionText {
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+[data-testid='a2ui-card'] input[type='checkbox'],
+[data-testid='a2ui-card'] input[type='radio'] {
+  accent-color: var(--google-primary);
+  cursor: pointer;
+  flex-shrink: 0;
+  margin: 3px 0 0;
+  width: 14px;
+  height: 14px;
+}
+[data-testid='a2ui-card'] .chip {
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--google-border);
+  background: var(--google-card);
+  color: var(--google-foreground);
+  cursor: pointer;
+  font-size: 12.5px;
+  font-family: inherit;
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s;
+}
+[data-testid='a2ui-card'] .chip:hover {
+  border-color: var(--a2ui-color-border-hover);
+  background: var(--google-muted);
+}
+[data-testid='a2ui-card'] .chip.selected {
+  background: var(--google-primary);
+  border-color: var(--google-primary);
+  color: var(--google-primary-foreground);
+}

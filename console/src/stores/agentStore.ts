@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { apiClient } from '../api/client';
+import { apiClient, getBasePath } from '../api/client';
 
 export interface AgentInfo {
   agent_id: string;
@@ -11,16 +11,41 @@ export interface AgentInfo {
   enable_subagents?: boolean;
 }
 
-/** Agent-aware routes: /chat/:agentId, /files/:agentId, etc. */
-const AGENT_ROUTES = ['chat', 'files', 'agent-config', 'agent-stats', 'sessions'];
+/**
+ * Agent-scoped sections nested under ``/agents/:agentId/<section>``.
+ * Global (instance-shared) pages stay at the top level instead.
+ */
+export const AGENT_SECTIONS = [
+  'chat',
+  'sessions',
+  'files',
+  'skills',
+  'tools',
+  'mcp',
+  'memory',
+  'heartbeat',
+  'sandbox',
+  'config',
+  'stats',
+] as const;
+
+export type AgentSection = (typeof AGENT_SECTIONS)[number];
+
+/** Build a deep-linkable agent-scoped path, e.g. ``/agents/foo/chat``. */
+export const agentPath = (section: AgentSection | string, agentId: string): string =>
+  `/agents/${agentId}/${section}`;
 
 /**
- * Resolve the agent id from the URL only (path param or ?agent= query).
- * Returns null when the URL carries no agent id.
+ * Resolve the agent id from the URL only (``/agents/:agentId/...`` path or
+ * ``?agent=`` query). Returns null when the URL carries no agent id.
  */
 export const getAgentIdFromUrl = (): string | null => {
-  const pathParts = window.location.pathname.split('/').filter(Boolean);
-  if (pathParts.length >= 2 && AGENT_ROUTES.includes(pathParts[0]) && pathParts[1]) {
+  // 子路径部署（如 /instance01）时先剥离挂载前缀；根路径部署时为空串，行为不变。
+  const base = getBasePath();
+  const rawPath = window.location.pathname;
+  const pathname = base && rawPath.startsWith(base) ? rawPath.slice(base.length) || '/' : rawPath;
+  const pathParts = pathname.split('/').filter(Boolean);
+  if (pathParts.length >= 2 && pathParts[0] === 'agents' && pathParts[1]) {
     return pathParts[1];
   }
   return new URLSearchParams(window.location.search).get('agent');
@@ -65,6 +90,9 @@ interface AgentState {
   setSelectedAgent: (agentId: string) => void;
 }
 
+/** 同域多实例（K8s 子路径部署）时按挂载前缀隔离存储，根路径部署保持原 key。 */
+const storageSuffix = getBasePath();
+
 export const useAgentStore = create<AgentState>()(
   persist(
     (set, get) => ({
@@ -103,7 +131,7 @@ export const useAgentStore = create<AgentState>()(
       },
     }),
     {
-      name: 'agentcore-agent-store',
+      name: storageSuffix ? `agentcore-agent-store-${storageSuffix}` : 'agentcore-agent-store',
       partialize: (state) => ({ selectedAgent: state.selectedAgent }),
     },
   ),

@@ -1,16 +1,21 @@
-import { Card, Typography } from 'antd';
+import { CloudSyncOutlined } from '@ant-design/icons';
+import GoogleCard from '../../components/GoogleCard';
+import GooglePageHeader from '../../components/GooglePageHeader';
 import { useI18n } from '../../i18n';
-
-const { Title, Paragraph } = Typography;
 
 export default function BackupsPage() {
   const { t } = useI18n();
   return (
-    <div style={{ padding: 24 }}>
-      <Card>
-        <Title level={3}>{t('menu.backups')}</Title>
-        <Paragraph>{t('common.comingSoon')}</Paragraph>
-      </Card>
+    <div>
+      <GooglePageHeader
+        icon={<CloudSyncOutlined />}
+        title={t('menu.backups')}
+      />
+      <GoogleCard>
+        <div style={{ color: 'var(--google-muted-foreground)' }}>
+          {t('common.comingSoon')}
+        </div>
+      </GoogleCard>
     </div>
   );
 }

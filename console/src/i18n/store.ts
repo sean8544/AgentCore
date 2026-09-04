@@ -13,11 +13,20 @@ import zhTools from './locales/zh-CN/tools.json';
 import zhMcp from './locales/zh-CN/mcp.json';
 import zhStats from './locales/zh-CN/stats.json';
 import zhSkillPool from './locales/zh-CN/skillPool.json';
+import zhSkills from './locales/zh-CN/skills.json';
 import zhEnvs from './locales/zh-CN/envs.json';
 import zhTokenUsage from './locales/zh-CN/tokenUsage.json';
 import zhAgentSelector from './locales/zh-CN/agentSelector.json';
 import zhAgentConfig from './locales/zh-CN/agentConfig.json';
 import zhSecurity from './locales/zh-CN/security.json';
+import zhDebug from './locales/zh-CN/debug.json';
+import zhCron from './locales/zh-CN/cron.json';
+import zhHeartbeat from './locales/zh-CN/heartbeat.json';
+import zhMemory from './locales/zh-CN/memory.json';
+import zhInbox from './locales/zh-CN/inbox.json';
+import zhSandbox from './locales/zh-CN/sandbox.json';
+import zhSandboxControl from './locales/zh-CN/sandboxControl.json';
+import zhAuth from './locales/zh-CN/auth.json';
 
 import enCommon from './locales/en/common.json';
 import enMenu from './locales/en/menu.json';
@@ -30,11 +39,20 @@ import enTools from './locales/en/tools.json';
 import enMcp from './locales/en/mcp.json';
 import enStats from './locales/en/stats.json';
 import enSkillPool from './locales/en/skillPool.json';
+import enSkills from './locales/en/skills.json';
 import enEnvs from './locales/en/envs.json';
 import enTokenUsage from './locales/en/tokenUsage.json';
 import enAgentSelector from './locales/en/agentSelector.json';
 import enAgentConfig from './locales/en/agentConfig.json';
 import enSecurity from './locales/en/security.json';
+import enDebug from './locales/en/debug.json';
+import enCron from './locales/en/cron.json';
+import enHeartbeat from './locales/en/heartbeat.json';
+import enMemory from './locales/en/memory.json';
+import enInbox from './locales/en/inbox.json';
+import enSandbox from './locales/en/sandbox.json';
+import enSandboxControl from './locales/en/sandboxControl.json';
+import enAuth from './locales/en/auth.json';
 
 const STORAGE_KEY = 'agentcore.locale';
 const FALLBACK_LOCALE: Locale = 'zh-CN';
@@ -53,11 +71,20 @@ const bundles: Record<Locale, Record<string, Record<string, string>>> = {
     mcp: zhMcp,
     stats: zhStats,
     skillPool: zhSkillPool,
+    skills: zhSkills,
     envs: zhEnvs,
     tokenUsage: zhTokenUsage,
     agentSelector: zhAgentSelector,
     agentConfig: zhAgentConfig,
     security: zhSecurity,
+    debug: zhDebug,
+    cron: zhCron,
+    heartbeat: zhHeartbeat,
+    memory: zhMemory,
+    inbox: zhInbox,
+    sandbox: zhSandbox,
+    sandboxControl: zhSandboxControl,
+    auth: zhAuth,
   },
   en: {
     common: enCommon,
@@ -71,11 +98,20 @@ const bundles: Record<Locale, Record<string, Record<string, string>>> = {
     mcp: enMcp,
     stats: enStats,
     skillPool: enSkillPool,
+    skills: enSkills,
     envs: enEnvs,
     tokenUsage: enTokenUsage,
     agentSelector: enAgentSelector,
     agentConfig: enAgentConfig,
     security: enSecurity,
+    debug: enDebug,
+    cron: enCron,
+    heartbeat: enHeartbeat,
+    memory: enMemory,
+    inbox: enInbox,
+    sandbox: enSandbox,
+    sandboxControl: enSandboxControl,
+    auth: enAuth,
   },
 };
 

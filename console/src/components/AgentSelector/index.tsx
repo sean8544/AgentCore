@@ -1,7 +1,7 @@
 import { Select, Tag, Space, Tooltip, Avatar, Typography } from 'antd';
 import { ApiOutlined } from '@ant-design/icons';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { useAgentStore } from '../../stores/agentStore';
+import { useAgentStore, agentPath, AGENT_SECTIONS } from '../../stores/agentStore';
 import { useI18n } from '../../i18n';
 
 const { Text } = Typography;
@@ -32,13 +32,15 @@ export default function AgentSelector({ collapsed }: { collapsed?: boolean }) {
 
   const handleAgentChange = (agentId: string) => {
     setSelectedAgent(agentId);
-    // Navigate to the current route section with the new agentId.
+    // Stay on the current agent section (/agents/:agentId/<section>), only
+    // swapping the agent; fall back to chat from global pages.
     const pathParts = location.pathname.split('/').filter(Boolean);
-    const agentRoutes = ['chat', 'files', 'agent-config', 'agent-stats', 'sessions'];
-    if (pathParts.length >= 1 && agentRoutes.includes(pathParts[0])) {
-      navigate(`/${pathParts[0]}/${agentId}`);
+    const section =
+      pathParts[0] === 'agents' && pathParts.length >= 3 ? pathParts[2] : null;
+    if (section && (AGENT_SECTIONS as readonly string[]).includes(section)) {
+      navigate(agentPath(section, agentId));
     } else {
-      navigate(`/chat/${agentId}`);
+      navigate(agentPath('chat', agentId));
     }
   };
 

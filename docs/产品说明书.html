@@ -1,0 +1,1180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentCore 产品说明书</title>
+<style>
+  :root {
+    --primary: #4285f4;
+    --primary-light: #e8f0fe;
+    --success: #34a853;
+    --warning: #fbbc05;
+    --danger: #ea4335;
+    --text: #202124;
+    --text-secondary: #5f6368;
+    --bg: #ffffff;
+    --bg-secondary: #f8f9fa;
+    --border: #dadce0;
+    --code-bg: #f1f3f4;
+    --shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.08);
+    --shadow-lg: 0 4px 16px rgba(0,0,0,0.12);
+    --radius: 8px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans SC', sans-serif;
+    color: var(--text);
+    line-height: 1.7;
+    background: var(--bg-secondary);
+  }
+
+  /* ── Navigation ── */
+  .top-nav {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 1000;
+    background: var(--bg); border-bottom: 1px solid var(--border);
+    height: 56px; display: flex; align-items: center; padding: 0 24px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  }
+  .top-nav .logo {
+    font-size: 18px; font-weight: 700; color: var(--primary);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .top-nav .logo svg { width: 28px; height: 28px; }
+  .top-nav .version {
+    font-size: 12px; background: var(--primary-light); color: var(--primary);
+    padding: 2px 8px; border-radius: 12px; margin-left: 8px; font-weight: 500;
+  }
+
+  /* ── Layout ── */
+  .layout { display: flex; margin-top: 56px; min-height: calc(100vh - 56px); }
+
+  /* ── Sidebar TOC ── */
+  .sidebar {
+    width: 280px; position: fixed; top: 56px; bottom: 0; left: 0;
+    background: var(--bg); border-right: 1px solid var(--border);
+    overflow-y: auto; padding: 16px 0;
+  }
+  .sidebar h3 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+    color: var(--text-secondary); padding: 12px 20px 6px; font-weight: 600;
+  }
+  .sidebar a {
+    display: block; padding: 7px 20px; color: var(--text-secondary);
+    text-decoration: none; font-size: 14px; border-left: 3px solid transparent;
+    transition: all 0.15s;
+  }
+  .sidebar a:hover { background: var(--bg-secondary); color: var(--text); }
+  .sidebar a.active {
+    color: var(--primary); background: var(--primary-light);
+    border-left-color: var(--primary); font-weight: 500;
+  }
+
+  /* ── Main Content ── */
+  .main { margin-left: 280px; flex: 1; max-width: 960px; padding: 32px 40px 80px; }
+
+  /* ── Hero ── */
+  .hero {
+    background: linear-gradient(135deg, #4285f4 0%, #34a853 100%);
+    color: white; padding: 48px 40px; border-radius: 16px;
+    margin-bottom: 40px; box-shadow: var(--shadow-lg);
+  }
+  .hero h1 { font-size: 36px; font-weight: 700; margin-bottom: 12px; }
+  .hero p { font-size: 16px; opacity: 0.9; max-width: 600px; line-height: 1.6; }
+  .hero .meta { margin-top: 16px; font-size: 13px; opacity: 0.7; }
+
+  /* ── Sections ── */
+  .section { margin-bottom: 48px; scroll-margin-top: 72px; }
+  .section h2 {
+    font-size: 24px; font-weight: 700; margin-bottom: 20px; padding-bottom: 10px;
+    border-bottom: 2px solid var(--primary); color: var(--text);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .section h2 .icon { font-size: 28px; }
+  .section h3 {
+    font-size: 18px; font-weight: 600; margin: 24px 0 12px; color: var(--text);
+  }
+  .section h4 {
+    font-size: 15px; font-weight: 600; margin: 16px 0 8px; color: var(--text-secondary);
+  }
+  .section p { margin-bottom: 12px; color: var(--text); }
+  .section ul, .section ol { margin: 8px 0 16px 24px; }
+  .section li { margin-bottom: 6px; }
+
+  /* ── Cards ── */
+  .card {
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 20px; margin-bottom: 16px; box-shadow: var(--shadow);
+  }
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin: 16px 0; }
+  .card-grid .card { margin-bottom: 0; }
+  .card h4 { margin-top: 0; color: var(--primary); font-size: 15px; }
+
+  /* ── Tables ── */
+  table {
+    width: 100%; border-collapse: collapse; margin: 16px 0;
+    background: var(--bg); border-radius: var(--radius); overflow: hidden;
+    box-shadow: var(--shadow);
+  }
+  th {
+    background: var(--bg-secondary); font-size: 13px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary);
+    padding: 12px 16px; text-align: left; border-bottom: 2px solid var(--border);
+  }
+  td {
+    padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 14px;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--bg-secondary); }
+
+  /* ── Screenshots ── */
+  .screenshot {
+    margin: 20px 0; border-radius: 12px; overflow: hidden;
+    box-shadow: var(--shadow-lg); border: 1px solid var(--border);
+  }
+  .screenshot img {
+    width: 100%; display: block;
+  }
+  .screenshot-caption {
+    background: var(--bg); padding: 10px 16px; font-size: 13px;
+    color: var(--text-secondary); border-top: 1px solid var(--border);
+    display: flex; align-items: center; gap: 6px;
+  }
+
+  /* ── Badges ── */
+  .badge {
+    display: inline-block; padding: 2px 10px; border-radius: 12px;
+    font-size: 12px; font-weight: 600;
+  }
+  .badge-blue { background: var(--primary-light); color: var(--primary); }
+  .badge-green { background: #e6f4ea; color: var(--success); }
+  .badge-yellow { background: #fef7e0; color: #e37400; }
+  .badge-red { background: #fce8e6; color: var(--danger); }
+
+  /* ── Code ─ */
+  code {
+    background: var(--code-bg); padding: 2px 6px; border-radius: 4px;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 13px;
+  }
+  pre {
+    background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: var(--radius);
+    overflow-x: auto; font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 13px; line-height: 1.6; margin: 12px 0;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+
+  /* ── Callout ── */
+  .callout {
+    padding: 16px 20px; border-radius: var(--radius); margin: 16px 0;
+    border-left: 4px solid;
+  }
+  .callout-info { background: #e8f0fe; border-color: var(--primary); }
+  .callout-warn { background: #fef7e0; border-color: var(--warning); }
+  .callout-danger { background: #fce8e6; border-color: var(--danger); }
+  .callout-success { background: #e6f4ea; border-color: var(--success); }
+  .callout-title { font-weight: 600; margin-bottom: 4px; }
+
+  /* ── Steps ── */
+  .steps { counter-reset: step; margin: 16px 0; }
+  .step {
+    display: flex; gap: 16px; padding: 16px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .step:last-child { border-bottom: none; }
+  .step-num {
+    width: 36px; height: 36px; border-radius: 50%;
+    background: var(--primary); color: white; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; font-size: 16px;
+  }
+  .step-content { flex: 1; }
+  .step-content strong { display: block; margin-bottom: 4px; }
+
+  /* ── Feature Grid ── */
+  .feature-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 16px 0;
+  }
+  .feature-item {
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 20px; text-align: center; transition: transform 0.15s, box-shadow 0.15s;
+  }
+  .feature-item:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+  .feature-item .emoji { font-size: 32px; margin-bottom: 8px; }
+  .feature-item .title { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+  .feature-item .desc { font-size: 12px; color: var(--text-secondary); }
+
+  /* ── Architecture Diagram ── */
+  .arch-diagram {
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 24px; margin: 20px 0; box-shadow: var(--shadow);
+  }
+  .arch-layer {
+    border: 2px solid; border-radius: var(--radius); padding: 16px;
+    margin-bottom: 12px; text-align: center;
+  }
+  .arch-layer-blue { border-color: var(--primary); background: var(--primary-light); }
+  .arch-layer-green { border-color: var(--success); background: #e6f4ea; }
+  .arch-layer-orange { border-color: #e37400; background: #fef7e0; }
+  .arch-layer-title { font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+  .arch-layer-items { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .arch-node {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 12px; font-size: 12px; font-weight: 500;
+  }
+  .arch-arrow { text-align: center; font-size: 20px; color: var(--text-secondary); margin: 4px 0; }
+
+  /* ─ Responsive ── */
+  @media (max-width: 1024px) {
+    .sidebar { display: none; }
+    .main { margin-left: 0; padding: 24px 20px; }
+    .feature-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 600px) {
+    .feature-grid { grid-template-columns: 1fr; }
+    .hero { padding: 32px 24px; }
+    .hero h1 { font-size: 28px; }
+  }
+
+  /* ── Print ── */
+  @media print {
+    .top-nav, .sidebar { display: none; }
+    .main { margin-left: 0; max-width: 100%; }
+    .screenshot { break-inside: avoid; }
+    .section { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══ Top Navigation ═══ -->
+<nav class="top-nav">
+  <div class="logo">
+    <svg viewBox="0 0 28 28" fill="none"><circle cx="14" cy="14" r="12" fill="#4285f4"/><path d="M9 14l3 3 7-7" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    AgentCore
+    <span class="version">v0.1.0</span>
+  </div>
+</nav>
+
+<div class="layout">
+
+<!-- ═══ Sidebar TOC ═══ -->
+<aside class="sidebar">
+  <h3>概览</h3>
+  <a href="#intro" class="active">产品简介</a>
+  <a href="#quickstart">快速上手</a>
+  <a href="#install">安装与部署</a>
+
+  <h3>核心功能</h3>
+  <a href="#chat">聊天对话</a>
+  <a href="#agents">智能体管理</a>
+  <a href="#sessions">会话管理</a>
+  <a href="#files">文件管理</a>
+  <a href="#memory">记忆管理</a>
+  <a href="#skills">技能管理</a>
+  <a href="#tools">工具管理</a>
+  <a href="#mcp">MCP 服务器</a>
+
+  <h3>协作与调度</h3>
+  <a href="#collaboration">多 Agent 协作</a>
+  <a href="#cron">定时任务</a>
+  <a href="#heartbeat">心跳巡检</a>
+
+  <h3>配置与安全</h3>
+  <a href="#config">运行配置</a>
+  <a href="#models">模型管理</a>
+  <a href="#envs">环境变量</a>
+  <a href="#security">安全配置</a>
+  <a href="#sandbox">沙箱管理</a>
+
+  <h3>运营与治理</h3>
+  <a href="#token">Token 消耗</a>
+  <a href="#inbox">收件箱</a>
+  <a href="#stats">智能体统计</a>
+  <a href="#debug">调试</a>
+
+  <h3>架构</h3>
+  <a href="#architecture">系统架构</a>
+  <a href="#lifecycle">Agent 生命周期</a>
+  <a href="#faq">常见问题</a>
+</aside>
+
+<!-- ═══ Main Content ═══ -->
+<main class="main">
+
+<!-- ─ Hero ── -->
+<div class="hero">
+  <h1>AgentCore 产品说明书</h1>
+  <p>让业务用户零代码组建一支"AI 员工团队"，让它们互相协作完成任务，并在权限、审批、成本监控的边界内被安全地管理。</p>
+  <div class="meta">版本 2.0 &nbsp;·&nbsp; 基于代码实际实现 &nbsp;·&nbsp; 2026-08-31</div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 1. 产品简介 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="intro">
+  <h2><span class="icon">🚀</span> 产品简介</h2>
+
+  <p>AgentCore 是一个<strong>多智能体管理平面</strong>，用于创建、配置、编排和监控一群互相协作的 AI 智能体（Agent）。</p>
+
+  <div class="callout callout-info">
+    <div class="callout-title">与 ChatGPT 的区别</div>
+    AgentCore 不是另一个聊天机器人，而是一个<strong>管理平台</strong>——你创建的不是"一个聊天窗口"，而是"一支有分工、可协作、可监管的 AI 团队"。
+  </div>
+
+  <div class="feature-grid">
+    <div class="feature-item">
+      <div class="emoji">🤖</div>
+      <div class="title">多 Agent 管理</div>
+      <div class="desc">创建、配置、启停多个专精 Agent</div>
+    </div>
+    <div class="feature-item">
+      <div class="emoji"></div>
+      <div class="title">跨 Agent 委派</div>
+      <div class="desc">主 Agent 自动将子任务委派给专家</div>
+    </div>
+    <div class="feature-item">
+      <div class="emoji">🛡️</div>
+      <div class="title">安全审批</div>
+      <div class="desc">危险操作需人工审批才能执行</div>
+    </div>
+    <div class="feature-item">
+      <div class="emoji"></div>
+      <div class="title">工作区隔离</div>
+      <div class="desc">每个 Agent 拥有独立文件系统</div>
+    </div>
+    <div class="feature-item">
+      <div class="emoji">📊</div>
+      <div class="title">成本监控</div>
+      <div class="desc">按 Agent/模型/时间统计 Token 消耗</div>
+    </div>
+    <div class="feature-item">
+      <div class="emoji">🧠</div>
+      <div class="title">长期记忆</div>
+      <div class="desc">自动巩固会话中的关键信息</div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 2. 快速上手 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="quickstart">
+  <h2><span class="icon">⚡</span> 快速上手（5 分钟教程）</h2>
+
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <strong>启动服务</strong>
+        <p>安装后运行 <code>agentcore-api</code>，浏览器访问 <code>http://127.0.0.1:8000/</code></p>
+        <p>系统自动创建 <code>default</code> Agent，进入聊天页面。</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <strong>完成引导对话</strong>
+        <p>Agent 会显示欢迎引导，引导你完成身份设置和偏好配置。完成后 Agent 会删除 <code>bootstrap.md</code>，后续以新的人设运行。</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <strong>配置模型</strong>
+        <p>点击左侧「模型」→「添加模型」→ 填写端点 URL、模型名称、API Key → 测试连接 → 保存。</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <strong>开始对话</strong>
+        <p>回到聊天页面，输入问题按 Enter 发送。Agent 会实时流式输出回复。</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <strong>创建多 Agent 团队（进阶）</strong>
+        <p>在「智能体管理」创建多个专精 Agent，在「运行配置」中开启委派能力，主 Agent 即可自动将子任务委派给专家。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 3. 安装与部署 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="install">
+  <h2><span class="icon">📦</span> 安装与部署</h2>
+
+  <h3>环境要求</h3>
+  <table>
+    <tr><th>依赖</th><th>要求</th><th>说明</th></tr>
+    <tr><td>Python</td><td>3.11+</td><td>后端运行时</td></tr>
+    <tr><td>Node.js</td><td>可选</td><td>仅构建前端 Web UI 需要</td></tr>
+    <tr><td>Docker</td><td>可选</td><td>沙箱功能需要</td></tr>
+    <tr><td>操作系统</td><td>Win / macOS / Linux</td><td>全平台支持</td></tr>
+  </table>
+
+  <h3>安装方式</h3>
+  <table>
+    <tr><th>方式</th><th>适用场景</th><th>命令</th></tr>
+    <tr><td>Shell 一键安装</td><td>Linux / macOS</td><td><code>curl -fsSL &lt;url&gt;/install.sh | bash</code></td></tr>
+    <tr><td>PowerShell 安装</td><td>Windows 推荐</td><td><code>irm &lt;url&gt;/install.ps1 | iex</code></td></tr>
+    <tr><td>CMD 安装</td><td>Windows CMD</td><td><code>scripts\install.bat</code></td></tr>
+    <tr><td>Docker 部署</td><td>生产环境</td><td><code>docker compose up -d</code></td></tr>
+  </table>
+
+  <h3>K8s 子路径多实例部署</h3>
+  <p>通过 <code>AGENTCORE_BASE_PATH</code> 环境变量配置，同一镜像可在任意 URL 子路径下运行，支持 N 个实例按路径区分：</p>
+  <pre><code>env:
+  - name: AGENTCORE_BASE_PATH
+    value: /instance01</code></pre>
+  <div class="callout callout-info">
+    每个实例必须挂载独立的持久卷到 <code>AGENTCORE_DATA_DIR</code>，SQLite 不支持多实例共享写入。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 4. 聊天对话 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="chat">
+  <h2><span class="icon">💬</span> 聊天对话</h2>
+
+  <p>聊天是 AgentCore 的<strong>核心交互界面</strong>，也是日常使用最多的功能。</p>
+
+  <div class="screenshot">
+    <img src="01-home-overview.png" alt="AgentCore 聊天主页">
+    <div class="screenshot-caption">📸 AgentCore 主界面 — 左侧导航栏 + 聊天页面</div>
+  </div>
+
+  <h3>基本操作</h3>
+  <table>
+    <tr><th>操作</th><th>说明</th></tr>
+    <tr><td>发送消息</td><td>在底部输入框输入，按 Enter 发送，Shift+Enter 换行</td></tr>
+    <tr><td>文件附件</td><td>点击附件按钮上传文件（≤20MB），Agent 可读取文件内容</td></tr>
+    <tr><td>停止生成</td><td>流式输出过程中可随时点击中断</td></tr>
+    <tr><td>切换模型</td><td>顶部下拉框可实时切换 LLM 模型</td></tr>
+    <tr><td>新建会话</td><td>点击会话列表顶部的"+"按钮</td></tr>
+  </table>
+
+  <h3>高级功能</h3>
+  <div class="card-grid">
+    <div class="card">
+      <h4>🧠 思考链展示</h4>
+      <p>显示 Agent 的推理过程（可折叠），实时带脉冲动画</p>
+    </div>
+    <div class="card">
+      <h4>🔧 工具调用卡片</h4>
+      <p>显示 Agent 调用了哪些工具、参数是什么、返回什么结果</p>
+    </div>
+    <div class="card">
+      <h4>📋 任务计划面板</h4>
+      <p>Agent 使用 write_todos 创建结构化任务清单，带进度条</p>
+    </div>
+    <div class="card">
+      <h4>🤝 子代理委派气泡</h4>
+      <p>显示 Agent 将任务委派给了哪个子 Agent，可点击跳转</p>
+    </div>
+    <div class="card">
+      <h4> Token 消耗</h4>
+      <p>每条消息显示 input/output token 数量</p>
+    </div>
+    <div class="card">
+      <h4>️ HITL 审批卡片</h4>
+      <p>危险操作暂停等待人工审批，支持批准/编辑/拒绝</p>
+    </div>
+  </div>
+
+  <h3>HITL 审批卡片</h3>
+  <p>当 Agent 执行危险操作（如删除文件）被拦截时，聊天界面会弹出审批卡片：</p>
+  <ul>
+    <li>显示操作详情（工具名、参数、原因）</li>
+    <li>提供三种操作：<strong>批准</strong> / <strong>编辑后批准</strong> / <strong>拒绝</strong></li>
+    <li>决策后 Agent 按结果继续执行</li>
+    <li>所有决策被记录到审计日志</li>
+  </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 5. 智能体管理 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="agents">
+  <h2><span class="icon">🤖</span> 智能体管理</h2>
+
+  <div class="screenshot">
+    <img src="04-agents-management.png" alt="智能体管理页面">
+    <div class="screenshot-caption"> 智能体管理 — 列表展示所有 Agent 的状态、执行环境、操作</div>
+  </div>
+
+  <h3>创建 Agent（三步向导）</h3>
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <strong>基础信息</strong>
+        <p>Agent ID（唯一标识）、描述（一句话职责）、系统提示词（人格和行为规则）</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <strong>模型配置</strong>
+        <p>选择模型来源：继承默认 / 选择已有模型 / 自定义。可为不同 Agent 分配不同模型以控制成本。</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <strong>能力与协作</strong>
+        <p>委派能力、任务拆解（write_todos）、HITL 工具审批、执行环境（本地/沙箱）</p>
+      </div>
+    </div>
+  </div>
+
+  <h3>管理操作</h3>
+  <table>
+    <tr><th>操作</th><th>说明</th><th>可恢复</th></tr>
+    <tr><td><span class="badge badge-green">启动</span></td><td>预热加载，加快首次响应</td><td>—</td></tr>
+    <tr><td><span class="badge badge-yellow">停止</span></td><td>释放内存，保留磁盘文件</td><td>下次使用自动重建</td></tr>
+    <tr><td><span class="badge badge-blue">重载</span></td><td>热重载工作区，配置变更生效</td><td>—</td></tr>
+    <tr><td><span class="badge badge-red">删除</span></td><td>永久删除 Agent 及所有数据</td><td>⚠️ 不可逆</td></tr>
+  </table>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 6. 会话管理 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="sessions">
+  <h2><span class="icon">📋</span> 会话管理</h2>
+
+  <div class="screenshot">
+    <img src="17-sessions-page.png" alt="会话管理页面">
+    <div class="screenshot-caption">📸 会话管理 — 列表展示所有历史会话，支持筛选和详情查看</div>
+  </div>
+
+  <ul>
+    <li><strong>会话列表</strong>：显示会话 ID、消息数、创建/更新时间</li>
+    <li><strong>会话详情</strong>：点击展开查看完整对话记录</li>
+    <li><strong>步骤时间线</strong>：回溯 Agent 每一步执行，含 token 消耗</li>
+    <li><strong>按 Agent 筛选</strong>：过滤查看特定 Agent 的会话</li>
+    <li><strong>批量删除</strong>：一次清理多个会话</li>
+    <li><strong>待审批过滤</strong>：只查看有未审批操作的会话</li>
+  </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 7. 文件管理 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="files">
+  <h2><span class="icon">📁</span> 文件管理</h2>
+
+  <div class="screenshot">
+    <img src="12-files-page.png" alt="文件管理页面">
+    <div class="screenshot-caption">📸 文件管理 — 内核文件 + 工作区文件双栏浏览，支持在线编辑</div>
+  </div>
+
+  <p>每个 Agent 拥有独立的虚拟文件系统（工作区目录）。</p>
+
+  <h3>文件类型</h3>
+  <table>
+    <tr><th>文件</th><th>用途</th><th>可编辑</th><th>可删除</th></tr>
+    <tr><td><code>agent.md</code></td><td>Agent 身份人设</td><td>✅</td><td>❌</td></tr>
+    <tr><td><code>bootstrap.md</code></td><td>首次引导（完成后自动删除）</td><td>✅</td><td>✅</td></tr>
+    <tr><td><code>soul.md</code></td><td>核心人设（兼容）</td><td>✅</td><td>❌</td></tr>
+    <tr><td><code>profile.md</code></td><td>用户偏好（兼容）</td><td>✅</td><td>❌</td></tr>
+  </table>
+
+  <h3>操作</h3>
+  <ul>
+    <li><strong>在线编辑</strong>：点击文件可在线编辑，保存后 Agent 下次对话生效</li>
+    <li><strong>上传/下载</strong>：支持任意文件上传和下载</li>
+    <li><strong>删除</strong>：删除文件或目录（内核文件不可删除）</li>
+    <li><strong>沙箱同步</strong>：推送到沙箱 / 从沙箱拉回 / 双向同步</li>
+  </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 8. 记忆管理 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="memory">
+  <h2><span class="icon">🧠</span> 记忆管理</h2>
+
+  <div class="screenshot">
+    <img src="16-memory-page.png" alt="记忆管理页面">
+    <div class="screenshot-caption">📸 记忆管理 — 长期记忆文件查看与编辑，后台巩固配置</div>
+  </div>
+
+  <h3>记忆层次</h3>
+  <table>
+    <tr><th>层次</th><th>存储</th><th>用途</th></tr>
+    <tr><td>短期记忆</td><td>LangGraph Checkpointer</td><td>会话内的多轮对话上下文</td></tr>
+    <tr><td>会话归档</td><td><code>memory/sessions/YYYY-MM-DD.md</code></td><td>每日对话归档</td></tr>
+    <tr><td>长期记忆</td><td><code>MEMORY.md</code> / <code>USER.md</code></td><td>跨会话的事实和偏好</td></tr>
+  </table>
+
+  <h3>记忆巩固（Sleep-time Compute）</h3>
+  <p>系统自动在后台执行记忆巩固：</p>
+  <ol>
+    <li>读取最近的会话归档</li>
+    <li>Agent 自动分析提取长期有用的事实</li>
+    <li>将提取的事实合并到 MEMORY.md 或 USER.md</li>
+    <li>过期的归档自动移入 <code>archived/</code> 目录</li>
+  </ol>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 9. 技能管理 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="skills">
+  <h2><span class="icon">⚡</span> 技能管理</h2>
+
+  <div class="screenshot">
+    <img src="13-skills-page.png" alt="技能管理页面">
+    <div class="screenshot-caption">📸 技能管理 — Agent 专属技能文件管理</div>
+  </div>
+
+  <h3>全局技能池</h3>
+  <div class="screenshot">
+    <img src="07-skill-pool.png" alt="全局技能池页面">
+    <div class="screenshot-caption"> 全局技能池 — 所有 Agent 共享的技能资源库</div>
+  </div>
+
+  <ul>
+    <li>浏览、编辑、上传、删除技能文件</li>
+    <li>支持 ZIP 打包上传</li>
+    <li>内置示例技能自动播种</li>
+    <li>从技能池<strong>安装</strong>到指定 Agent 的 <code>skills/</code> 目录</li>
+    <li>支持<strong>批量安装</strong>到多个 Agent</li>
+    <li><strong>同步更新</strong>：技能池更新后一键推送到所有已安装 Agent</li>
+  </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 10. 工具管理 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="tools">
+  <h2><span class="icon">🔧</span> 工具管理</h2>
+
+  <div class="screenshot">
+    <img src="14-tools-page.png" alt="工具管理页面">
+    <div class="screenshot-caption"> 工具管理 — 内置工具启用/禁用管理</div>
+  </div>
+
+  <table>
+    <tr><th>工具</th><th>功能</th></tr>
+    <tr><td><code>ls</code></td><td>列出目录内容</td></tr>
+    <tr><td><code>read_file</code></td><td>读取文件内容</td></tr>
+    <tr><td><code>write_file</code></td><td>写入文件内容</td></tr>
+    <tr><td><code>edit_file</code></td><td>编辑文件（精确替换）</td></tr>
+    <tr><td><code>delete</code></td><td>删除文件或目录</td></tr>
+    <tr><td><code>glob</code></td><td>按模式搜索文件名</td></tr>
+    <tr><td><code>grep</code></td><td>按正则搜索文件内容</td></tr>
+    <tr><td><code>execute</code></td><td>执行 Shell 命令</td></tr>
+    <tr><td><code>task</code></td><td>委派任务给子 Agent</td></tr>
+  </table>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 11. MCP 服务器 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="mcp">
+  <h2><span class="icon">🔗</span> MCP 服务器</h2>
+
+  <div class="screenshot">
+    <img src="15-mcp-page.png" alt="MCP 服务器管理页面">
+    <div class="screenshot-caption">📸 MCP 服务器管理 — 外部工具链接入配置</div>
+  </div>
+
+  <p>MCP（Model Context Protocol）用于接入外部工具链。</p>
+
+  <h3>传输方式</h3>
+  <ul>
+    <li><code>stdio</code> — 本地进程</li>
+    <li><code>sse</code> — HTTP 流</li>
+    <li><code>streamable_http</code> — 可流式 HTTP</li>
+  </ul>
+
+  <h3>预设模板</h3>
+  <ul>
+    <li>🌐 Playwright 浏览器自动化</li>
+    <li>📂 文件系统访问</li>
+    <li> Web 搜索</li>
+  </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 12. 多 Agent 协作 -->
+<!-- ══════════════════════════════════════════ -->
+<section class="section" id="collaboration">
+  <h2><span class="icon">🤝</span> 多 Agent 协作</h2>
+
+  <h3>协作模型</h3>
+  <p>AgentCore 采用<strong>主从协作模型</strong>：</p>
+
+  <div class="arch-diagram">
+    <div class="arch-layer arch-layer-blue">
+      <div class="arch-layer-title">用户 → 主 Agent（开启委派能力）</div>
+    </div>
+    <div class="arch-arrow">↓ task 工具</div>
+    <div class="arch-layer arch-layer-green">
+      <div class="arch-layer-title">子 Agent 独立执行（上下文隔离）</div>
+    </div>
+    <div class="arch-arrow">↓ 只回传最终结果</div>
+    <div class="arch-layer arch-layer-blue">
+      <div class="arch-layer-title">主 Agent 整合后回复用户</div>
+    </div>
+  </div>
+
+  <h3>关键特性</h3>
+  <div class="card-grid">
+    <div class="card">
+      <h4> 上下文隔离</h4>
+      <p>子 Agent 的中间过程不进入主 Agent 的上下文，主对话只看到最终结果</p>
+    </div>
+    <div class="card">
+      <h4>🔍 动态发现</h4>
+      <p>新建 Agent 后，所有开启委派的主 Agent 自动发现新子 Agent</p>
+    </div>
+    <div class="card">
+      <h4>🔄 角色切换</h4>
+      <p>同一个 Agent 可以既是主（调用别人）又是从（被别人调用）</p>
+    </div>
+  </div>
+
+  <h3>协作流程示例</h3>
+  <div class="callout callout-success">
+    <div class="callout-title">场景：翻译 + 撰写周报</div>
+    1. 用户选择开启了委派的 Agent A → 说"帮我把这段英文翻译成中文，然后写成周报"<br>
+    2. Agent A 判断需要两个子任务：翻译 + 撰写<br>
+    3. Agent A 委派翻译任务给「翻译专家」→ 独立完成 → 回传结果<br>
+    4. Agent A 委派撰写任务给「文案专家」→ 独立完成 → 回传结果<br>
+    5. Agent A 整合两个结果 → 回复用户
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 13. 定时任务 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="cron">
+  <h2><span class="icon">⏰</span> 定时任务</h2>
+
+  <div class="screenshot">
+    <img src="10-cron-jobs.png" alt="定时任务页面">
+    <div class="screenshot-caption">📸 定时任务 — Cron 表达式调度，支持执行历史查看</div>
+  </div>
+
+  <table>
+    <tr><th>配置</th><th>说明</th></tr>
+    <tr><td>调度方式</td><td>Cron 表达式（5 段标准格式）/ 一次性执行</td></tr>
+    <tr><td>常用预设</td><td>每天 09:00、每小时、每 5 分钟等</td></tr>
+    <tr><td>时区</td><td>支持配置时区</td></tr>
+    <tr><td>超时</td><td>单次执行的最大时间</td></tr>
+    <tr><td>会话模式</td><td>共享会话（保持上下文）/ 独立会话（每次新建）</td></tr>
+    <tr><td>立即运行</td><td>手动触发一次执行</td></tr>
+    <tr><td>执行历史</td><td>查看最近 50 条执行记录（成功/失败/跳过/中断）</td></tr>
+  </table>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 14. 心跳巡检 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="heartbeat">
+  <h2><span class="icon">❤️</span> 心跳巡检</h2>
+
+  <div class="screenshot">
+    <img src="19-heartbeat-page.png" alt="心跳管理页面">
+    <div class="screenshot-caption">📸 心跳巡检 — 定期自动执行 HEARTBEAT.md 巡检清单</div>
+  </div>
+
+  <p>Agent 的定期健康巡检机制，按配置间隔将 <code>HEARTBEAT.md</code> 清单喂给 Agent 自动执行。</p>
+
+  <table>
+    <tr><th>配置</th><th>说明</th></tr>
+    <tr><td>启用/禁用</td><td>开关</td></tr>
+    <tr><td>执行间隔</td><td>如 <code>30m</code>、<code>1h</code>、<code>2h30m</code></td></tr>
+    <tr><td>活跃时段</td><td>限制执行时间窗口（如只在工作时间执行）</td></tr>
+    <tr><td>超时设置</td><td>单次巡检的最大时间</td></tr>
+    <tr><td>立即运行</td><td>手动触发一次巡检</td></tr>
+  </table>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 15. 运行配置 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="config">
+  <h2><span class="icon">⚙️</span> 运行配置</h2>
+
+  <div class="screenshot">
+    <img src="11-agent-config.png" alt="Agent 运行配置页面">
+    <div class="screenshot-caption"> 运行配置 — 系统提示词、委派拓扑、子代理白名单</div>
+  </div>
+
+  <table>
+    <tr><th>配置项</th><th>说明</th></tr>
+    <tr><td>系统提示词</td><td>Agent 的身份和行为规则（编辑 agent.md）</td></tr>
+    <tr><td>委派拓扑</td><td>可视化展示主 Agent 与子 Agent 的委派关系</td></tr>
+    <tr><td>子代理白名单</td><td>配置该 Agent 可以委派给哪些子 Agent</td></tr>
+    <tr><td>模型选择</td><td>为该 Agent 分配 LLM 模型</td></tr>
+    <tr><td>委派开关</td><td>启用/禁用跨 Agent 委派能力</td></tr>
+    <tr><td>任务规划</td><td>启用/禁用 write_todos 工具</td></tr>
+    <tr><td>HITL 规则</td><td>配置需要人工审批的工具列表</td></tr>
+  </table>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 16. 模型管理 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="models">
+  <h2><span class="icon">💻</span> 模型管理</h2>
+
+  <div class="screenshot">
+    <img src="05-models-page.png" alt="模型管理页面">
+    <div class="screenshot-caption">📸 模型管理 — 多供应商模型注册、连接测试、分配</div>
+  </div>
+
+  <h3>模型注册表</h3>
+  <table>
+    <tr><th>配置</th><th>说明</th></tr>
+    <tr><td>提供商</td><td>OpenAI / Azure / Qwen / 自定义</td></tr>
+    <tr><td>端点 URL</td><td>API 基础 URL</td></tr>
+    <tr><td>模型名称</td><td>具体模型标识</td></tr>
+    <tr><td>API Key</td><td>支持环境变量引用（安全存储）</td></tr>
+    <tr><td>自定义 Headers</td><td>额外的 HTTP 头</td></tr>
+    <tr><td>生成参数</td><td>temperature、max_tokens 等</td></tr>
+  </table>
+
+  <h3>连接测试</h3>
+  <ul>
+    <li>一键测试模型端点的可用性</li>
+    <li>自动检测常见错误（401 认证失败、403 权限不足、429 限流等）</li>
+    <li>自动注入浏览器 UA 绕过 Cloudflare 反爬</li>
+  </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 17. 环境变量 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="envs">
+  <h2><span class="icon">🌍</span> 环境变量</h2>
+
+  <div class="screenshot">
+    <img src="06-environments.png" alt="环境变量页面">
+    <div class="screenshot-caption">📸 环境变量 — API Key 等敏感配置统一管理（值脱敏显示）</div>
+  </div>
+
+  <div class="callout callout-warn">
+    <div class="callout-title">安全特性</div>
+    API Key 等敏感信息不进代码库、不进日志明文、不进 agent.json。UI 展示时脱敏为 <code>***</code>。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 18. 安全配置 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="security">
+  <h2><span class="icon">🛡️</span> 安全配置</h2>
+
+  <div class="screenshot">
+    <img src="08-security.png" alt="安全配置页面">
+    <div class="screenshot-caption">📸 安全配置 — 全局 HITL 审批策略，配置需审批的工具列表</div>
+  </div>
+
+  <p>全局 HITL（Human-in-the-Loop）审批策略：</p>
+  <table>
+    <tr><th>配置</th><th>说明</th></tr>
+    <tr><td>启用/禁用</td><td>全局开关</td></tr>
+    <tr><td>需审批工具</td><td>配置哪些工具的操作需要人工审批</td></tr>
+    <tr><td>决策类型</td><td>允许的审批操作类型</td></tr>
+  </table>
+  <p>默认需审批的工具：<code>delete</code>、<code>write_file</code>、<code>edit_file</code>、<code>execute</code></p>
+  <p>全局规则与 Agent 级别 <code>interrupt_rules</code> 智能合并，Agent 级配置优先。</p>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 19. 沙箱管理 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="sandbox">
+  <h2><span class="icon">🖥️</span> 沙箱管理</h2>
+
+  <div class="screenshot">
+    <img src="18-sandbox-page.png" alt="沙箱管理页面">
+    <div class="screenshot-caption">📸 沙箱管理 — 容器镜像、生命周期策略、状态监控</div>
+  </div>
+
+  <div class="screenshot">
+    <img src="21-sandbox-control.png" alt="沙箱控制平面页面">
+    <div class="screenshot-caption">📸 沙箱控制平面 — OpenSandbox 服务器连接管理</div>
+  </div>
+
+  <h3>生命周期策略</h3>
+  <table>
+    <tr><th>策略</th><th>行为</th><th>适用场景</th></tr>
+    <tr><td><span class="badge badge-blue">即用即销</span></td><td>Agent 停止时销毁沙箱</td><td>开发/测试</td></tr>
+    <tr><td><span class="badge badge-yellow">空闲暂停</span></td><td>空闲超时后暂停，聊天时恢复</td><td>生产（成本敏感）</td></tr>
+    <tr><td><span class="badge badge-green">长期驻留</span></td><td>持续运行直到 Agent 删除</td><td>长期运行任务</td></tr>
+  </table>
+
+  <h3>第三方沙箱后端</h3>
+  <div class="card-grid">
+    <div class="card">
+      <h4>OpenSandbox（阿里巴巴）</h4>
+      <p>通用 AI 应用沙箱平台，支持 Docker/K8s 容器编排，多语言 SDK，MCP 原生集成。</p>
+    </div>
+    <div class="card">
+      <h4>AIO Sandbox</h4>
+      <p>单容器集成完整开发环境：Shell + 浏览器 + VSCode + Jupyter + MCP Hub。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════ -->
+<!-- 20. Token 消耗 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="token">
+  <h2><span class="icon">📊</span> Token 消耗统计</h2>
+
+  <div class="screenshot">
+    <img src="09-token-usage.png" alt="Token 消耗页面">
+    <div class="screenshot-caption">📸 Token 消耗 — 总览、每日趋势、按 Agent/模型维度统计</div>
+  </div>
+
+  <table>
+    <tr><th>视图</th><th>说明</th></tr>
+    <tr><td>总览</td><td>总 Token / 输入 Token / 输出 Token</td></tr>
+    <tr><td>趋势图</td><td>每日消耗折线图</td></tr>
+    <tr><td>按 Agent</td><td>各 Agent 的消耗明细</td></tr>
+    <tr><td>按模型</td><td>各模型的消耗明细</td></tr>
+    <tr><td>时间范围</td><td>7 / 14 / 30 天可选</td></tr>
+  </table>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 21. 收件箱 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="inbox">
+  <h2><span class="icon">📬</span> 收件箱</h2>
+
+  <div class="screenshot">
+    <img src="22-inbox-page.png" alt="收件箱页面">
+    <div class="screenshot-caption">📸 收件箱 — 汇聚后台任务的待审批事项</div>
+  </div>
+
+  <p>汇聚所有后台任务的待处理事项：</p>
+  <ul>
+    <li>心跳巡检的告警</li>
+    <li>定时任务的审批请求</li>
+    <li>记忆巩固的待确认项</li>
+    <li>支持按 Agent 筛选</li>
+    <li>点击「前往审批」跳转到对应聊天页面处理</li>
+  </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 22. 智能体统计 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="stats">
+  <h2><span class="icon">📈</span> 智能体统计</h2>
+
+  <p>全局仪表盘数据：</p>
+  <table>
+    <tr><th>指标</th><th>说明</th></tr>
+    <tr><td>Agent 总数</td><td>已注册的 Agent 数量</td></tr>
+    <tr><td>已加载数</td><td>当前在内存中的 Agent 数量</td></tr>
+    <tr><td>会话总数</td><td>所有 Agent 的会话总数</td></tr>
+    <tr><td>消息总数</td><td>所有会话的消息总数</td></tr>
+  </table>
+  <p>各 Agent 的明细：状态、会话数、消息数、技能数。</p>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 23. 调试 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="debug">
+  <h2><span class="icon">🐛</span> 调试</h2>
+
+  <div class="screenshot">
+    <img src="20-debug-page.png" alt="调试页面">
+    <div class="screenshot-caption">📸 调试 — 后端日志实时查看器，支持级别过滤和搜索</div>
+  </div>
+
+  <ul>
+    <li>自动刷新（3 秒轮询）</li>
+    <li>日志级别过滤（ERROR / WARNING / INFO / DEBUG）</li>
+    <li>搜索高亮</li>
+    <li>最新优先排序</li>
+    <li>日志复制到剪贴板</li>
+  </ul>
+</section>
+
+<!-- ══════════════════════════════════════════ -->
+<!-- 24. 系统架构 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="architecture">
+  <h2><span class="icon">🏗️</span> 系统架构</h2>
+
+  <div class="arch-diagram">
+    <div class="arch-layer arch-layer-blue">
+      <div class="arch-layer-title">前端 Console</div>
+      <div class="arch-layer-items">
+        <span class="arch-node">React 19</span>
+        <span class="arch-node">TypeScript</span>
+        <span class="arch-node">Ant Design</span>
+        <span class="arch-node">Zustand</span>
+        <span class="arch-node">Vite</span>
+      </div>
+    </div>
+    <div class="arch-arrow">▼ HTTP / SSE</div>
+    <div class="arch-layer arch-layer-green">
+      <div class="arch-layer-title">FastAPI 应用层</div>
+      <div class="arch-layer-items">
+        <span class="arch-node">路由分发</span>
+        <span class="arch-node">请求校验</span>
+        <span class="arch-node">中间件</span>
+        <span class="arch-node">生命周期管理</span>
+      </div>
+    </div>
+    <div class="arch-arrow">▼</div>
+    <div class="arch-layer arch-layer-orange">
+      <div class="arch-layer-title">Agent 运行时层</div>
+      <div class="arch-layer-items">
+        <span class="arch-node">AgentFactory</span>
+        <span class="arch-node">deepagents SDK</span>
+        <span class="arch-node">LangGraph 图执行</span>
+        <span class="arch-node">Checkpointer</span>
+      </div>
+    </div>
+    <div class="arch-arrow">▼</div>
+    <div class="arch-layer" style="border-color: #9c27b0; background: #f3e5f5;">
+      <div class="arch-layer-title">基础设施层</div>
+      <div class="arch-layer-items">
+        <span class="arch-node">SQLite</span>
+        <span class="arch-node">APScheduler</span>
+        <span class="arch-node">Docker</span>
+        <span class="arch-node">OpenSandbox</span>
+        <span class="arch-node">AIO Sandbox</span>
+      </div>
+    </div>
+  </div>
+
+  <h3>核心设计理念</h3>
+  <table>
+    <tr><th>理念</th><th>说明</th></tr>
+    <tr><td>请求驱动</td><td>Agent 无常驻进程，每次调用在当次请求内执行图计算并返回</td></tr>
+    <tr><td>配置即状态</td><td>Agent 的所有配置存储在 <code>agent.json</code>，是唯一事实来源</td></tr>
+    <tr><td>图缓存+失效</td><td>编译后的 LangGraph 图内存缓存，配置变更时自动失效重建</td></tr>
+    <tr><td>工作区隔离</td><td>每个 Agent 拥有独立的文件系统目录</td></tr>
+    <tr><td>可插拔后端</td><td>本地文件系统 / OpenSandbox / AIO Sandbox 可切换</td></tr>
+  </table>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 25. Agent 生命周期 -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="lifecycle">
+  <h2><span class="icon">🔄</span> Agent 生命周期</h2>
+
+  <h3>状态说明</h3>
+  <table>
+    <tr><th>状态</th><th>含义</th></tr>
+    <tr><td><span class="badge badge-green">idle</span></td><td>无在途请求，正常静息状态</td></tr>
+    <tr><td><span class="badge badge-yellow">busy</span></td><td>正在处理请求</td></tr>
+    <tr><td><span class="badge badge-blue">unloaded</span></td><td>已卸载内存态（stop 操作后），磁盘文件保留</td></tr>
+  </table>
+
+  <h3>生命周期操作</h3>
+  <table>
+    <tr><th>操作</th><th>行为</th><th>可恢复性</th></tr>
+    <tr><td><strong>启动（Start）</strong></td><td>预热加载 workspace 到内存</td><td>—</td></tr>
+    <tr><td><strong>停止（Stop）</strong></td><td>释放内存态，磁盘文件保留</td><td>下次使用自动重建</td></tr>
+    <tr><td><strong>重载（Reload）</strong></td><td>热重载 workspace，重建 Agent 图</td><td>—</td></tr>
+    <tr><td><strong>删除（Delete）</strong></td><td>删除所有数据（工作区、会话、配置等）</td><td>⚠️ 不可逆</td></tr>
+  </table>
+
+  <h3>首次对话引导</h3>
+  <div class="callout callout-info">
+    新建 Agent 会自动播种 <code>bootstrap.md</code> 引导文件，引导完成身份设置。Agent 完成设置后会删除该文件，此后永远不会再创建。
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- 26. FAQ -->
+<!-- ═══════════════════════════════════════════ -->
+<section class="section" id="faq">
+  <h2><span class="icon">❓</span> 常见问题</h2>
+
+  <div class="card">
+    <h4>Q: Agent 不回复怎么办？</h4>
+    <p>A: 检查模型配置是否正确、API Key 是否有效。在「模型」页面使用「测试连接」功能验证。</p>
+  </div>
+  <div class="card">
+    <h4>Q: 多 Agent 委派不生效？</h4>
+    <p>A: 确保主 Agent 已开启「委派能力」，且目标子 Agent 已创建。</p>
+  </div>
+  <div class="card">
+    <h4>Q: 沙箱文件同步冲突？</h4>
+    <p>A: 当本地和沙箱同时修改同一文件时会产生冲突。系统会保存 <code>.remote-conflict</code> 副本，请手动合并。</p>
+  </div>
+  <div class="card">
+    <h4>Q: 审批卡片不出现？</h4>
+    <p>A: 检查「安全」页面是否启用了全局审批策略，以及 Agent 的 HITL 规则是否配置了对应工具。</p>
+  </div>
+  <div class="card">
+    <h4>Q: 如何备份数据？</h4>
+    <p>A: 所有数据存储在 <code>.agentcore/</code> 目录下。Docker 部署时数据在 <code>agentcore-data</code> volume 中。可手动备份整个目录。</p>
+  </div>
+  <div class="card">
+    <h4>Q: 如何升级？</h4>
+    <p>A: 重新运行安装脚本即可。Docker 部署执行 <code>docker compose pull && docker compose up -d</code>。</p>
+  </div>
+</section>
+
+<!-- ── Footer ─ -->
+<div style="text-align: center; padding: 40px 0; color: var(--text-secondary); font-size: 13px; border-top: 1px solid var(--border); margin-top: 40px;">
+  <p>AgentCore 产品说明书 v2.0 &nbsp;·&nbsp; 基于代码实际实现 &nbsp;·&nbsp; 2026-08-31</p>
+  <p style="margin-top: 8px;">Powered by deepagents SDK · OpenSandbox · AIO Sandbox</p>
+</div>
+
+</main>
+</div>
+
+<script>
+// Sidebar active link on scroll
+const sections = document.querySelectorAll('.section');
+const links = document.querySelectorAll('.sidebar a');
+
+function updateActiveLink() {
+  let current = '';
+  sections.forEach(section => {
+    const sectionTop = section.offsetTop - 80;
+    if (window.scrollY >= sectionTop) {
+      current = section.getAttribute('id');
+    }
+  });
+  links.forEach(link => {
+    link.classList.remove('active');
+    if (link.getAttribute('href') === '#' + current) {
+      link.classList.add('active');
+    }
+  });
+}
+
+window.addEventListener('scroll', updateActiveLink);
+window.addEventListener('load', updateActiveLink);
+
+// Smooth scroll
+links.forEach(link => {
+  link.addEventListener('click', function(e) {
+    e.preventDefault();
+    const target = document.querySelector(this.getAttribute('href'));
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth' });
+    }
+  });
+});
+</script>
+
+</body>
+</html>

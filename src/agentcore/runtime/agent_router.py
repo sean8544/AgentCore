@@ -28,8 +28,13 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from agentcore.runtime import paths
+
 from agentcore.runtime.agent_ids import known_agent_ids
 from agentcore.runtime.chat_router import invalidate_agent_graph
+from agentcore.runtime.heartbeat import heartbeat_job_id
+from agentcore.runtime.memory_consolidation import consolidation_job_id
+from agentcore.runtime.multi_agent_manager import _rmtree_with_retry
 from agentcore.runtime.workspace import ALL_KERNEL_FILE_NAMES
 
 logger = logging.getLogger(__name__)
@@ -60,6 +65,9 @@ class CreateAgentRequest(BaseModel):
     *inherit_parent_tools* are written into the ``settings`` section
     of the new agent's ``agent.json`` so the subagent registry and
     the agent factory can pick them up at graph-build time.
+
+    *settings* allows passing arbitrary settings (e.g. ``backend`` for
+    sandbox configuration) that are merged into the ``settings`` section.
     """
 
     agent_id: str
@@ -69,6 +77,7 @@ class CreateAgentRequest(BaseModel):
     enable_subagents: bool | None = None
     inherit_parent_tools: bool | None = None
     interrupt_rules: list[dict[str, Any]] | None = None
+    settings: dict[str, Any] | None = None
 
 
 class StartAgentRequest(BaseModel):
@@ -119,6 +128,7 @@ class UpdateSettingsRequest(BaseModel):
     enable_subagents: bool | None = None
     inherit_parent_tools: bool | None = None
     enable_planning: bool | None = None
+    enable_a2ui: bool | None = None
     interrupt_rules: list[dict[str, Any]] | None = None
     subagent_ids: list[str] | None = None
     model_id: str | None = None
@@ -193,23 +203,48 @@ def _known_agent_ids(request: Request) -> set[str]:
 
 @router.get("")
 async def list_agents(request: Request) -> list[dict[str, Any]]:
-    """List all agents (loaded workspaces plus persisted / tracked ones)."""
+    """List all agents (only those persisted in ``agents.json``).
+
+    As a self-healing measure we also unload any in-memory workspace that
+    no longer has a persisted record — such zombies used to leak back
+    into the UI because :func:`known_agent_ids` used to trust
+    ``manager.list_workspaces()``.  Dropping them here guarantees the
+    agents list, the sessions filter and the heartbeat scheduler all
+    converge on the same authoritative view.
+    """
     manager = _get_manager(request)
 
+    persisted = _known_agent_ids(request)
+    for stale in list(manager.list_workspaces()):
+        if stale not in persisted:
+            try:
+                await manager.unload_workspace(stale)
+                logger.info(
+                    "Auto-unloaded zombie workspace with no persisted record: %s",
+                    stale,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to auto-unload zombie workspace %s", stale
+                )
+
     agents: list[dict[str, Any]] = []
-    for agent_id in sorted(_known_agent_ids(request)):
+    for agent_id in sorted(persisted):
         workspace = manager.get_workspace(agent_id)
         status = workspace.get_status() if workspace is not None else None
 
-        # Read settings for description and enable_subagents.
+        # Read settings for description, enable_subagents and backend_type.
         description = ""
         enable_subagents = False
+        backend_type = "local"
         if workspace is not None:
             try:
                 agent_config = workspace.read_agent_config()
                 settings = agent_config.get("settings", {}) or {}
                 description = settings.get("description", "") or ""
                 enable_subagents = bool(settings.get("enable_subagents", False))
+                backend_cfg = settings.get("backend", {}) or {}
+                backend_type = backend_cfg.get("type", "local") or "local"
             except Exception:
                 pass
 
@@ -221,6 +256,7 @@ async def list_agents(request: Request) -> list[dict[str, Any]]:
                 "session_count": status["session_count"] if status else 0,
                 "description": description,
                 "enable_subagents": enable_subagents,
+                "backend_type": backend_type,
                 "subagents": _subagent_summaries(request, agent_id) if enable_subagents else [],
             }
         )
@@ -288,6 +324,7 @@ async def create_agent(payload: CreateAgentRequest, request: Request) -> dict[st
             enable_subagents=payload.enable_subagents,
             inherit_parent_tools=payload.inherit_parent_tools,
             interrupt_rules=payload.interrupt_rules,
+            extra_settings=payload.settings,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=_key_error_detail(exc)) from exc
@@ -365,7 +402,12 @@ async def get_agent(agent_id: str, request: Request) -> dict[str, Any]:
 
 @router.post("/{agent_id}/start")
 async def start_agent(agent_id: str, request: Request) -> dict[str, Any]:
-    """Start an agent from its workspace ``agent.json`` configuration."""
+    """Warm up an agent: load its workspace and ensure a record exists.
+
+    Agents are request-driven — there is nothing to "start".  This
+    endpoint only preloads the workspace so subsequent requests are
+    fast; the agent graph itself is built lazily on first use.
+    """
     if agent_id not in _known_agent_ids(request):
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
 
@@ -388,21 +430,19 @@ async def start_agent(agent_id: str, request: Request) -> dict[str, Any]:
 
 @router.post("/{agent_id}/stop")
 async def stop_agent(agent_id: str, request: Request) -> dict[str, Any]:
-    """Stop a running agent.
+    """Unload an agent: release in-memory state, keep everything on disk.
 
-    Beyond the runtime state transition this also unloads the agent's
-    workspace from memory (flushing to disk — files stay in place) and
-    invalidates the cached agent graph, so a later chat rebuilds the
-    agent from scratch (warm-up happens lazily on next use).
+    Idempotent.  The workspace is unloaded from memory (flushed to disk
+    — files stay in place) and the cached agent graph is dropped so a
+    later chat rebuilds the agent from the persisted configuration.
+    Session checkpoints are **not** touched — unloading never loses
+    conversation state.  On-disk files are only removed by DELETE.
     """
     service = _get_service(request)
     try:
         await service.stop_agent(agent_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found") from exc
-    except ValueError as exc:
-        # Illegal lifecycle transition (e.g. already stopped).
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("Failed to stop agent %s", agent_id)
         raise HTTPException(
@@ -421,24 +461,46 @@ async def stop_agent(agent_id: str, request: Request) -> dict[str, Any]:
                 "Failed to unload workspace for agent %s", agent_id
             )
 
-    # Drop the cached agent graph so the next start/chat rebuilds it.
+    # Drop the cached agent graph so the next chat rebuilds it.  Do NOT
+    # purge session checkpoints — unloading must never lose conversation
+    # state (checkpoints carry files / todos / compressed memory).
     try:
-        await invalidate_agent_graph(request.app.state, agent_id)
+        await invalidate_agent_graph(
+            request.app.state, agent_id, purge_checkpoints=False
+        )
     except Exception:
         logger.exception(
             "Failed to invalidate agent graph on stop for %s", agent_id
         )
 
-    return {"result": "ok", "agent_id": agent_id, "state": "stopped"}
+    # --- Sandbox lifecycle: stop agent triggers sandbox cleanup ---
+    # Strategy A (ephemeral) and B (pause-on-idle) destroy the sandbox.
+    # Strategy C (persistent) keeps it running.
+    sandbox_mgr = getattr(request.app.state, "sandbox_session_manager", None)
+    if sandbox_mgr is not None:
+        try:
+            await sandbox_mgr.on_agent_stop(agent_id)
+        except Exception:
+            logger.exception(
+                "Failed to handle sandbox on agent stop for %s", agent_id
+            )
+
+    return {"result": "ok", "agent_id": agent_id, "state": "idle"}
 
 
 @router.post("/{agent_id}/reload")
 async def reload_agent(agent_id: str, request: Request) -> dict[str, str]:
-    """Hot-reload the agent's workspace without affecting other agents."""
+    """Hot-reload the agent's workspace without affecting other agents.
+
+    Works whether or not the workspace is currently loaded — an unloaded
+    (e.g. just-stopped) agent is loaded first, then reloaded.
+    """
     manager = _get_manager(request)
     workspace = manager.get_workspace(agent_id)
     if workspace is None:
-        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+        if agent_id not in _known_agent_ids(request):
+            raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+        workspace = await manager.get_or_create_workspace(agent_id)
 
     try:
         await manager.reload_workspace(agent_id)
@@ -623,6 +685,8 @@ async def put_agent_settings(
         settings["inherit_parent_tools"] = payload.inherit_parent_tools
     if payload.enable_planning is not None:
         settings["enable_planning"] = payload.enable_planning
+    if payload.enable_a2ui is not None:
+        settings["enable_a2ui"] = payload.enable_a2ui
     if payload.interrupt_rules is not None:
         # Empty list clears HITL rules; otherwise replace wholesale.
         settings["interrupt_rules"] = payload.interrupt_rules
@@ -681,25 +745,130 @@ async def list_delegations(agent_id: str, request: Request) -> dict[str, Any]:
 
 @router.delete("/{agent_id}")
 async def delete_agent(agent_id: str, request: Request) -> dict[str, str]:
-    """Delete an agent: shut down its workspace and drop persisted state."""
+    """Delete an agent: shut down its workspace and drop persisted state.
+
+    Also removes every scheduled entry point that could resurrect the
+    agent (heartbeat internal job + user cron jobs targeting it) —
+    otherwise the next scheduled run would recreate the workspace via
+    lazy loading and bring the "deleted" agent back to life.
+
+    Full cleanup covers:
+
+    * cron / heartbeat jobs (resurrection guard),
+    * sandbox session,
+    * workspace directory (``.agentcore/workspace/agent/{id}/``),
+    * runtime data directory (``.agentcore/data/agents/{id}/`` — sessions
+      and other runtime artefacts),
+    * persisted agent state (``agents.json``),
+    * ControlPlaneStore sessions belonging to this agent,
+    * delegation records referencing this agent,
+    * runtime tracking instance.
+    """
     if agent_id not in _known_agent_ids(request):
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
 
+    # Scheduled resurrection guard: drop heartbeat + memory-consolidation
+    # internal jobs and every user cron job that targets this agent.
+    # Missing any one of them leaves a scheduled callback that will call
+    # ``get_or_create_workspace`` on the next fire and recreate the
+    # on-disk workspace directory (zombie agent after restart).
+    cron_manager = getattr(request.app.state, "cron_manager", None)
+    if cron_manager is not None:
+        try:
+            cron_manager.remove_internal_job(heartbeat_job_id(agent_id))
+            cron_manager.remove_internal_job(consolidation_job_id(agent_id))
+            removed = await cron_manager.delete_jobs_for_agent(agent_id)
+            if removed:
+                logger.info(
+                    "Removed %d cron job(s) of deleted agent %s",
+                    removed,
+                    agent_id,
+                )
+        except Exception:
+            logger.exception(
+                "Failed to remove scheduled jobs for deleted agent %s", agent_id
+            )
+
+    # --- Sandbox lifecycle: delete agent always destroys sandbox ---
+    # All strategies (ephemeral/pause-on-idle/persistent) destroy the
+    # sandbox when the agent is deleted.
+    sandbox_mgr = getattr(request.app.state, "sandbox_session_manager", None)
+    if sandbox_mgr is not None:
+        try:
+            await sandbox_mgr.destroy(agent_id)
+        except Exception:
+            logger.exception(
+                "Failed to destroy sandbox for deleted agent %s", agent_id
+            )
+
+    # --- Workspace directory (kernel files / skills / agent.json) ---
     manager = _get_manager(request)
     await manager.remove_workspace(agent_id)
 
-    # 同时从 AgentRuntime 移除跟踪实例，避免列表接口继续返回该 agent。
+    # --- Runtime data directory (sessions / other artefacts) ---
+    # Sessions are persisted at .agentcore/data/agents/{agent_id}/sessions/;
+    # the whole data directory is removed here so no orphan session files
+    # survive the deletion.
+    data_dir = paths.get_agent_data_dir(agent_id)
+    if data_dir.exists():
+        _rmtree_with_retry(data_dir)
+        if not data_dir.exists():
+            logger.info("Removed agent data directory for %s", agent_id)
+        else:
+            logger.warning(
+                "Agent data directory for %s still exists after removal attempt",
+                agent_id,
+            )
+
+    # --- ControlPlaneStore sessions belonging to this agent ---
+    store = getattr(request.app.state, "store", None)
+    if store is not None:
+        try:
+            orphan_sids = [
+                sid
+                for sid, data in store.sessions.items()
+                if data.get("agent_id") == agent_id
+            ]
+            if orphan_sids:
+                store.delete_sessions(orphan_sids)
+                logger.info(
+                    "Removed %d session(s) of deleted agent %s",
+                    len(orphan_sids),
+                    agent_id,
+                )
+        except Exception:
+            logger.exception(
+                "Failed to remove sessions for deleted agent %s", agent_id
+            )
+
+        # --- Delegation records ---
+        try:
+            delegations = getattr(store, "delegations", None)
+            if delegations is not None and agent_id in delegations:
+                delegations.pop(agent_id, None)
+                store._save_delegations()
+                logger.info("Removed delegation records for agent %s", agent_id)
+        except Exception:
+            logger.exception(
+                "Failed to remove delegation records for agent %s", agent_id
+            )
+
+    # --- Runtime tracking instance (and persisted agent state) ---
     runtime = getattr(request.app.state, "runtime", None)
     if runtime is not None:
         await runtime.remove_agent(agent_id)
 
-    store = getattr(request.app.state, "store", None)
-    if store is not None:
-        store.agent_states.pop(agent_id, None)
-        try:
-            store._save_agents()
-        except Exception:
-            logger.exception("Failed to persist removal of agent %s", agent_id)
+    # --- Drop the agent's own cached graph + thread index ---
+    # Without this a still-open browser tab could hit ``/chat/stream``
+    # and the graph-cache fast-path would keep serving the deleted
+    # agent, which in turn would call ``begin_turn`` and re-persist its
+    # state (see the fix in AgentRuntime.begin_turn).
+    try:
+        await invalidate_agent_graph(request.app.state, agent_id)
+    except Exception:
+        logger.exception(
+            "Failed to invalidate graph cache for deleted agent %s", agent_id
+        )
 
     # Dynamic discovery (Task 2.3): invalidate subagent consumers so they
     # drop the removed agent from their delegation list.
@@ -710,11 +879,17 @@ async def delete_agent(agent_id: str, request: Request) -> dict[str, str]:
 
 @router.get("/{agent_id}/sessions")
 async def list_sessions(agent_id: str, request: Request) -> dict[str, Any]:
-    """List all chat sessions belonging to the agent's workspace."""
+    """List all chat sessions belonging to the agent's workspace.
+
+    Sessions live on disk independently of the workspace's load state, so
+    an unloaded (e.g. just-stopped) agent is loaded transparently.
+    """
+    if agent_id not in _known_agent_ids(request):
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
     manager = _get_manager(request)
     workspace = manager.get_workspace(agent_id)
     if not workspace:
-        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+        workspace = await manager.get_or_create_workspace(agent_id)
     return {"sessions": workspace.chat_manager.list_sessions()}
 
 
@@ -726,10 +901,12 @@ async def get_session_history(
     limit: int = 50,
 ) -> dict[str, Any]:
     """Return the most recent *limit* messages of a session."""
+    if agent_id not in _known_agent_ids(request):
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
     manager = _get_manager(request)
     workspace = manager.get_workspace(agent_id)
     if not workspace:
-        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+        workspace = await manager.get_or_create_workspace(agent_id)
     try:
         history = workspace.chat_manager.get_history(session_id, limit=limit)
     except KeyError as exc:

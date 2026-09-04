@@ -1,20 +1,20 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Badge, Button, Card, Col, Row, Space, Statistic, Table, Tag, Typography } from 'antd';
+import { Badge, Button, Space, Statistic, Table, Tag, Typography } from 'antd';
 import {
+  BarChartOutlined,
+  CommentOutlined,
   MessageOutlined,
-  RobotOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
-  CommentOutlined,
+  RobotOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { apiClient } from '../../api/client';
 import { useI18n } from '../../i18n';
+import GoogleCard from '../../components/GoogleCard';
+import GooglePageHeader from '../../components/GooglePageHeader';
 
 const { Text } = Typography;
-
-/* ───────── Constants ───────── */
-const ORANGE = '#FF7F16';
 
 /* ───────── Types ───────── */
 interface AgentStat {
@@ -34,12 +34,10 @@ interface StatsData {
   agents: AgentStat[];
 }
 
+// 后端状态模型只有 idle / busy（请求驱动的派生事实）；未装载的 agent 由下方 fallback 展示。
 const STATE_LABELS: Record<string, { textKey: string; color: string }> = {
-  running: { textKey: 'stats.running', color: 'success' },
-  idle: { textKey: 'stats.idle', color: 'processing' },
-  started: { textKey: 'stats.started', color: 'success' },
-  stopped: { textKey: 'stats.stopped', color: 'default' },
-  error: { textKey: 'stats.error', color: 'error' },
+  busy: { textKey: 'stats.busy', color: 'processing' },
+  idle: { textKey: 'stats.idle', color: 'success' },
 };
 
 export default function AgentStatsPage() {
@@ -69,10 +67,10 @@ export default function AgentStatsPage() {
       dataIndex: 'agent_id',
       render: (id: string, record) => (
         <Space>
-          <RobotOutlined style={{ color: ORANGE }} />
+          <RobotOutlined style={{ color: 'var(--google-primary)' }} />
           <Text strong>{id}</Text>
           {record.loaded && (
-            <Tag style={{ fontSize: 11, color: ORANGE, borderColor: '#ffd8b3', background: '#fff7ef' }}>
+            <Tag color="warning" style={{ fontSize: 11 }}>
               {t('stats.loaded')}
             </Tag>
           )}
@@ -99,55 +97,68 @@ export default function AgentStatsPage() {
   ];
 
   return (
-    <div style={{ padding: 24 }}>
+    <div>
+      <GooglePageHeader
+        icon={<BarChartOutlined />}
+        title={t('stats.title')}
+        extra={
+          <Button
+            size="small"
+            icon={<ReloadOutlined spin={loading} />}
+            onClick={() => void loadStats()}
+          >
+            {t('common.refresh')}
+          </Button>
+        }
+      />
+
       {/* ── Summary cards ── */}
-      <Row gutter={16} style={{ marginBottom: 16 }}>
-        <Col span={6}>
-          <Card size="small" loading={loading && !data}>
-            <Statistic
-              title={t('stats.totalAgents')}
-              value={data?.agent_count ?? 0}
-              prefix={<RobotOutlined />}
-              valueStyle={{ color: ORANGE, fontSize: 28 }}
-            />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card size="small" loading={loading && !data}>
-            <Statistic
-              title={t('stats.runningLoaded')}
-              value={data?.running_count ?? 0}
-              prefix={<PlayCircleOutlined />}
-              valueStyle={{ fontSize: 28 }}
-            />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card size="small" loading={loading && !data}>
-            <Statistic
-              title={t('stats.totalSessions')}
-              value={data?.session_count ?? 0}
-              prefix={<MessageOutlined />}
-              valueStyle={{ fontSize: 28 }}
-            />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card size="small" loading={loading && !data}>
-            <Statistic
-              title={t('stats.totalMessages')}
-              value={data?.message_count ?? 0}
-              prefix={<CommentOutlined />}
-              valueStyle={{ fontSize: 28 }}
-            />
-          </Card>
-        </Col>
-      </Row>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+          gap: 'var(--google-space-6)',
+          marginBottom: 'var(--google-space-8)',
+        }}
+      >
+        <GoogleCard size="small" loading={loading && !data}>
+          <Statistic
+            title={t('stats.totalAgents')}
+            value={data?.agent_count ?? 0}
+            prefix={<RobotOutlined />}
+            valueStyle={{ color: 'var(--google-primary)', fontSize: 28 }}
+          />
+        </GoogleCard>
+        <GoogleCard size="small" loading={loading && !data}>
+          <Statistic
+            title={t('stats.runningLoaded')}
+            value={data?.running_count ?? 0}
+            prefix={<PlayCircleOutlined />}
+            valueStyle={{ fontSize: 28 }}
+          />
+        </GoogleCard>
+        <GoogleCard size="small" loading={loading && !data}>
+          <Statistic
+            title={t('stats.totalSessions')}
+            value={data?.session_count ?? 0}
+            prefix={<MessageOutlined />}
+            valueStyle={{ fontSize: 28 }}
+          />
+        </GoogleCard>
+        <GoogleCard size="small" loading={loading && !data}>
+          <Statistic
+            title={t('stats.totalMessages')}
+            value={data?.message_count ?? 0}
+            prefix={<CommentOutlined />}
+            valueStyle={{ fontSize: 28 }}
+          />
+        </GoogleCard>
+      </div>
 
       {/* ── Per-agent breakdown ── */}
-      <Card
+      <GoogleCard
         title={<span>{t('stats.agentDetail')}</span>}
-        styles={{ body: { padding: 0 } }}
+        bodyStyle={{ padding: 0 }}
         extra={
           <Button
             size="small"
@@ -166,7 +177,7 @@ export default function AgentStatsPage() {
           dataSource={data?.agents ?? []}
           pagination={false}
         />
-      </Card>
+      </GoogleCard>
     </div>
   );
 }

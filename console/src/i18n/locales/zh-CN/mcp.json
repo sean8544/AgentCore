@@ -35,5 +35,20 @@
   "serverIdExample": "例如 filesystem",
   "displayNameExample": "例如 文件系统服务",
   "startCommandExample": "例如 npx -y @modelcontextprotocol/server-filesystem /path",
-  "serviceUrlExample": "例如 http://localhost:8000/mcp"
+  "serviceUrlExample": "例如 http://localhost:8000/mcp",
+  "preset": "快速选择模板",
+  "presetNone": "自定义配置",
+  "presetCustom": "自定义",
+  "presetBrowserUse": "浏览器自动化",
+  "presetBrowserUseDesc": "Playwright 驱动，支持导航、点击、输入、截图等操作",
+  "presetFilesystem": "文件系统访问",
+  "presetFilesystemDesc": "读写本地文件系统",
+  "presetWebSearch": "联网搜索",
+  "presetWebSearchDesc": "Web 搜索实时信息",
+  "presetAdded": "已添加预设 {{id}}",
+  "addFromPreset": "从模板添加",
+  "orCustom": "或自定义配置",
+  "presetCategoryBrowser": "浏览器",
+  "presetCategoryFile": "文件",
+  "presetCategorySearch": "搜索"
 }

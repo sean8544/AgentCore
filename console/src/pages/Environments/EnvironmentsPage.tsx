@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   Button,
-  Card,
   Form,
   Input,
   Modal,
@@ -15,11 +14,10 @@ import { DeleteOutlined, EditOutlined, KeyOutlined, PlusOutlined } from '@ant-de
 import type { ColumnsType } from 'antd/es/table';
 import { apiClient } from '../../api/client';
 import { useI18n } from '../../i18n';
+import GoogleCard from '../../components/GoogleCard';
+import GooglePageHeader from '../../components/GooglePageHeader';
 
 const { Text } = Typography;
-
-/* ───────── Constants ───────── */
-const ORANGE = '#FF7F16';
 
 /* ───────── Types ───────── */
 interface EnvItem {
@@ -159,30 +157,24 @@ export default function EnvironmentsPage() {
   ];
 
   return (
-    <div style={{ padding: 24 }}>
-      <Card
-        styles={{ body: { padding: 0 } }}
-        title={
-          <Space>
-            <KeyOutlined style={{ color: ORANGE }} />
-            <span>{t('envs.title')}</span>
-            <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
-              {t('envs.subtitle')}
-            </Text>
-          </Space>
-        }
+    <div>
+      <GooglePageHeader
+        icon={<KeyOutlined />}
+        title={t('envs.title')}
+        subtitle={t('envs.subtitle')}
         extra={
           <Button
             size="small"
             type="primary"
             icon={<PlusOutlined />}
             onClick={openAdd}
-            style={{ background: ORANGE, borderColor: ORANGE }}
           >
             {t('envs.addVariable')}
           </Button>
         }
-      >
+      />
+
+      <GoogleCard bodyStyle={{ padding: 0 }}>
         <Table<EnvItem>
           rowKey="key"
           size="middle"
@@ -192,7 +184,7 @@ export default function EnvironmentsPage() {
           pagination={false}
           locale={{ emptyText: t('envs.emptyHint') }}
         />
-      </Card>
+      </GoogleCard>
 
       <Modal
         title={editingKey ? t('envs.editTitle', { key: editingKey }) : t('envs.addTitle')}
@@ -202,10 +194,9 @@ export default function EnvironmentsPage() {
         confirmLoading={saving}
         okText={t('common.save')}
         cancelText={t('common.cancel')}
-        okButtonProps={{ style: { background: ORANGE, borderColor: ORANGE } }}
         destroyOnHidden
       >
-        <Form form={form} layout="vertical" style={{ marginTop: 12 }}>
+        <Form form={form} layout="vertical" style={{ marginTop: 'var(--google-space-4)' }}>
           <Form.Item
             name="key"
             label={t('envs.variableName')}

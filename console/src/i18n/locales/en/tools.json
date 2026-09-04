@@ -4,5 +4,6 @@
   "currentAgent": "Current Agent",
   "tool": "Tool",
   "builtin": "Built-in",
+  "capability": "Capability",
   "loadFailed": "Failed to load tool list"
 }

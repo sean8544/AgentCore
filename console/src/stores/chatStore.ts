@@ -1,6 +1,7 @@
 import { create } from 'zustand';
-import { apiClient } from '../api/client';
+import { apiClient, authHeaders, clearAuthToken, redirectToLogin } from '../api/client';
 import { getAgentId } from './agentStore';
+import { useInboxStore } from './inboxStore';
 
 /* ───────── Types ───────── */
 
@@ -9,10 +10,23 @@ export interface ToolCall {
   args: string;
 }
 
+export interface DelegationActivity {
+  /** delegation lifecycle / internal subagent step */
+  kind: 'started' | 'tool' | 'tool_done' | 'thinking' | 'completed' | 'error' | 'collapsed';
+  agent: string;
+  /** tool name for tool / tool_done / error entries; "+N" for collapsed */
+  name?: string;
+  ts?: string;
+}
+
 export interface Delegation {
   /** subagent id the task was delegated to */
   subagent: string;
   description: string;
+  /** live activity feed from the subagent (streamed + persisted) */
+  activity?: DelegationActivity[];
+  /** true while the subagent's task tool is actually running */
+  running?: boolean;
 }
 
 export interface TodoItem {
@@ -21,6 +35,15 @@ export interface TodoItem {
   description?: string;
   status?: string;
   priority?: string;
+}
+
+export interface Attachment {
+  /** original (sanitised) file name */
+  name: string;
+  /** workspace-relative path, e.g. "uploads/ab12cd_report.pdf" */
+  path: string;
+  /** file size in bytes */
+  size: number;
 }
 
 export interface DelegationRecord {
@@ -38,6 +61,17 @@ export interface ApprovalAction {
    * approve / edit / reject / respond).  Absent = all decisions open.
    */
   allowed_decisions?: string[];
+}
+
+/**
+ * A2UI interactive surface payload projected from a ``send_a2ui`` tool
+ * call — a sequence of v0.9 envelopes (createSurface / updateComponents /
+ * updateDataModel) fed to the @a2ui/react MessageProcessor.
+ */
+export interface A2uiSurfacePayload {
+  surface_id: string;
+  title?: string;
+  messages: Record<string, unknown>[];
 }
 
 export interface Message {
@@ -59,6 +93,12 @@ export interface Message {
   todos?: TodoItem[];
   /** HITL decision recorded for the approval this message requested */
   approval?: { decision: string; tool_name?: string; timestamp?: string };
+  /** token consumption for this turn (only on assistant messages) */
+  tokenUsage?: { input_tokens: number; output_tokens: number };
+  /** files attached to this user message (uploaded via /api/chat/upload) */
+  attachments?: Attachment[];
+  /** A2UI interactive surfaces rendered during this turn */
+  a2uiSurfaces?: A2uiSurfacePayload[];
 }
 
 export interface Session {
@@ -67,6 +107,7 @@ export interface Session {
   created_at: string;
   updated_at: string;
   message_count: number;
+  title?: string;  // User-assigned session title
 }
 
 interface ChatState {
@@ -83,14 +124,13 @@ interface ChatState {
   todos: TodoItem[];
   /** delegation records received by the current agent (who delegated what) */
   delegationRecords: DelegationRecord[];
-  /** cumulative token usage for the current streaming turn */
-  tokenUsage: { input_tokens: number; output_tokens: number } | null;
 
   loadSessions: () => Promise<void>;
   loadHistory: (sessionId: string) => Promise<void>;
   selectSession: (sessionId: string | null) => Promise<void>;
   newSession: () => void;
-  sendMessage: (content: string) => Promise<void>;
+  renameSession: (sessionId: string, title: string) => Promise<void>;
+  sendMessage: (content: string, attachments?: Attachment[]) => Promise<void>;
   /** Abort the in-flight stream — keeps the partial reply, stops the agent */
   stopStreaming: () => void;
   submitApproval: (decision: 'approve' | 'edit' | 'reject', editedArgs?: Record<string, unknown>, message?: string) => Promise<void>;
@@ -147,10 +187,14 @@ function toMessage(m: Record<string, unknown>, index: number): Message {
       };
     })
     .filter((d) => d.subagent);
-  // write_todos renders as the todo panel and task as a delegation
-  // bubble — never as raw tool cards.
+  // write_todos renders as the todo panel, task as a delegation bubble
+  // and send_a2ui as an interactive surface — never as raw tool cards.
   const toolCalls = allCalls.filter(
-    (tc) => tc.name && tc.name !== 'write_todos' && tc.name !== 'task',
+    (tc) =>
+      tc.name &&
+      tc.name !== 'write_todos' &&
+      tc.name !== 'task' &&
+      tc.name !== 'send_a2ui',
   );
   // Recover reasoning chain, todo plan and approval state persisted by the
   // backend (fields: reasoning / todos / approval_request / approval).
@@ -164,6 +208,52 @@ function toMessage(m: Record<string, unknown>, index: number): Message {
   const approvalRequestRaw = (m.approval_request ?? null) as {
     actions?: unknown[];
   } | null;
+  const tokenUsageRaw = (m.token_usage ?? null) as {
+    input_tokens?: number;
+    output_tokens?: number;
+  } | null;
+  // Recover chat attachments persisted alongside the user message.
+  const attachmentsRaw = Array.isArray(m.attachments)
+    ? (m.attachments as Record<string, unknown>[])
+    : undefined;
+  const attachments = attachmentsRaw
+    ?.map((a) => ({
+      name: String(a.name ?? ''),
+      path: String(a.path ?? ''),
+      size: Number(a.size ?? 0),
+    }))
+    .filter((a) => a.name);
+  // Merge the persisted delegation extras (activity timeline + final
+  // running state) into the delegations recovered from tool_calls.
+  const delExtras = Array.isArray(m.delegations)
+    ? (m.delegations as Record<string, unknown>[])
+    : [];
+  for (const e of delExtras) {
+    const sub = String(e.subagent ?? '');
+    if (!sub) continue;
+    const acts = Array.isArray(e.activity)
+      ? (e.activity as DelegationActivity[])
+      : undefined;
+    const match = delegations.find((d) => d.subagent === sub);
+    if (match) {
+      if (acts?.length) match.activity = acts;
+      match.running = false;
+    } else {
+      delegations.push({
+        subagent: sub,
+        description: String(e.description ?? ''),
+        activity: acts?.length ? acts : undefined,
+        running: false,
+      });
+    }
+  }
+  // Recover A2UI surfaces persisted with the turn (a2ui_surfaces field).
+  const a2uiRaw = Array.isArray(m.a2ui_surfaces)
+    ? (m.a2ui_surfaces as Record<string, unknown>[])
+    : [];
+  const a2uiSurfaces = a2uiRaw
+    .map(parseA2uiPayload)
+    .filter((s): s is A2uiSurfacePayload => s !== null);
   return {
     id: `hist-${index}-${String(m.timestamp ?? '')}`,
     role: (role === 'user' || role === 'system' ? role : 'assistant') as Message['role'],
@@ -173,6 +263,12 @@ function toMessage(m: Record<string, unknown>, index: number): Message {
     toolCalls: toolCalls.length ? toolCalls : undefined,
     delegations: delegations.length ? delegations : undefined,
     todos: todosRaw?.length ? todosRaw : undefined,
+    tokenUsage: tokenUsageRaw && (tokenUsageRaw.input_tokens || tokenUsageRaw.output_tokens)
+      ? {
+          input_tokens: Number(tokenUsageRaw.input_tokens ?? 0),
+          output_tokens: Number(tokenUsageRaw.output_tokens ?? 0),
+        }
+      : undefined,
     approval:
       approvalRaw && approvalRaw.decision
         ? {
@@ -194,7 +290,27 @@ function toMessage(m: Record<string, unknown>, index: number): Message {
             }),
           }
         : undefined,
+    attachments: attachments?.length ? attachments : undefined,
+    a2uiSurfaces: a2uiSurfaces.length ? a2uiSurfaces : undefined,
   };
+}
+
+/** Validate an incoming ``a2ui`` SSE payload into a surface payload. */
+function parseA2uiPayload(data: Record<string, unknown>): A2uiSurfacePayload | null {
+  const msgs = Array.isArray(data.messages) ? data.messages : [];
+  if (!data.surface_id || !msgs.length) return null;
+  return {
+    surface_id: String(data.surface_id),
+    title: data.title ? String(data.title) : undefined,
+    messages: msgs as Record<string, unknown>[],
+  };
+}
+
+/** Immutably attach a surface to a message (deduped by surface_id). */
+function withA2uiSurface(m: Message, surface: A2uiSurfacePayload): Message {
+  const existing = m.a2uiSurfaces ?? [];
+  if (existing.some((s) => s.surface_id === surface.surface_id)) return m;
+  return { ...m, a2uiSurfaces: [...existing, surface] };
 }
 
 function apiErrorMessage(err: unknown): string {
@@ -215,7 +331,12 @@ function apiErrorMessage(err: unknown): string {
 
 export const useChatStore = create<ChatState>((set, get) => {
   /** Stream response via SSE (Task 3.3) — token-by-token updates. */
-  const sendViaStream = async (msgId: string, sessionId: string | null, content: string) => {
+  const sendViaStream = async (
+    msgId: string,
+    sessionId: string | null,
+    content: string,
+    attachments?: Attachment[],
+  ) => {
     const agentId = getAgentId();
     let accumulated = '';
     let sessionIdResolved = sessionId;
@@ -225,18 +346,23 @@ export const useChatStore = create<ChatState>((set, get) => {
       // turn so the stop button can cancel it mid-flight.
       abortController?.abort();
       abortController = new AbortController();
-      const response = await fetch('/api/chat/stream', {
+      const response = await fetch(`${apiClient.defaults.baseURL}/chat/stream`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         signal: abortController.signal,
         body: JSON.stringify({
           agent_id: agentId,
           message: content,
           session_id: sessionId ?? undefined,
+          attachments: attachments?.length ? attachments : undefined,
         }),
       });
 
       if (!response.ok || !response.body) {
+        if (response.status === 401) {
+          clearAuthToken();
+          redirectToLogin();
+        }
         throw new Error(`Stream failed: ${response.status}`);
       }
 
@@ -292,6 +418,8 @@ export const useChatStore = create<ChatState>((set, get) => {
                         : m,
                     ),
                   }));
+                  // New pending approval — bump the inbox badge.
+                  void useInboxStore.getState().refreshPendingCount();
                   return;
                 }
               } else if (currentEvent === 'tool_calls') {
@@ -392,18 +520,79 @@ export const useChatStore = create<ChatState>((set, get) => {
                     }));
                   }
                 }
+              } else if (currentEvent === 'subagent_activity') {
+                // Live subagent progress: lifecycle + internal tool steps,
+                // attached to the matching delegation bubble by agent name.
+                const agent = String(data.agent ?? '');
+                const kind = String(data.kind ?? '') as DelegationActivity['kind'];
+                if (!agent || !kind) continue;
+                set((state) => ({
+                  messages: state.messages.map((m) => {
+                    if (m.id !== msgId) return m;
+                    const dels = m.delegations ?? [];
+                    // Target the most recent delegation for this subagent.
+                    for (let i = dels.length - 1; i >= 0; i--) {
+                      if (dels[i].subagent !== agent) continue;
+                      const entry: DelegationActivity = {
+                        kind,
+                        agent,
+                        name: data.name ? String(data.name) : undefined,
+                        ts: data.ts ? String(data.ts) : undefined,
+                      };
+                      const finished = kind === 'completed' || kind === 'error';
+                      const next = dels.map((d, j) =>
+                        j === i
+                          ? {
+                              ...d,
+                              activity: [...(d.activity ?? []), entry],
+                              running: !finished,
+                            }
+                          : d,
+                      );
+                      return { ...m, delegations: next };
+                    }
+                    return m;
+                  }),
+                }));
               } else if (currentEvent === 'todo') {
                 // Structured task plan from write_todos.
                 const todos = Array.isArray(data.todos) ? data.todos : [];
                 if (todos.length > 0) {
-                  set({ todos: todos as TodoItem[] });
+                  const msgId = get().streamingMsgId;
+                  set((state) => ({
+                    todos: todos as TodoItem[],
+                    messages: msgId
+                      ? state.messages.map((m) =>
+                          m.id === msgId ? { ...m, todos: todos as TodoItem[] } : m,
+                        )
+                      : state.messages,
+                  }));
+                }
+              } else if (currentEvent === 'a2ui') {
+                // Interactive A2UI surface projected from a send_a2ui call.
+                const surface = parseA2uiPayload(data as Record<string, unknown>);
+                if (surface) {
+                  const a2uiMsgId = get().streamingMsgId ?? msgId;
+                  set((state) => ({
+                    messages: state.messages.map((m) =>
+                      m.id === a2uiMsgId ? withA2uiSurface(m, surface) : m,
+                    ),
+                  }));
                 }
               } else if (currentEvent === 'token_usage') {
-                // Cumulative token consumption.
+                // Cumulative token consumption — attach to the current
+                // streaming assistant message so it appears inline.
                 const inp = Number(data.input_tokens ?? 0);
                 const out = Number(data.output_tokens ?? 0);
                 if (inp || out) {
-                  set({ tokenUsage: { input_tokens: inp, output_tokens: out } });
+                  const msgId = get().streamingMsgId;
+                  if (msgId) {
+                    set((state) => ({
+                      messages: state.messages.map((m) =>
+                        m.id === msgId ? { ...m, tokenUsage: { input_tokens: inp, output_tokens: out } } : m,
+                      ),
+                    }));
+                  }
                 }
               } else if (currentEvent === 'done') {
                 sessionIdResolved = data.session_id ?? sessionIdResolved;
@@ -411,8 +600,15 @@ export const useChatStore = create<ChatState>((set, get) => {
                 // event — surface it if no token_usage event arrived.
                 const inp = Number(data.input_tokens ?? 0);
                 const out = Number(data.output_tokens ?? 0);
-                if ((inp || out) && !get().tokenUsage) {
-                  set({ tokenUsage: { input_tokens: inp, output_tokens: out } });
+                if (inp || out) {
+                  const msgId = get().streamingMsgId;
+                  if (msgId) {
+                    set((state) => ({
+                      messages: state.messages.map((m) =>
+                        m.id === msgId && !m.tokenUsage ? { ...m, tokenUsage: { input_tokens: inp, output_tokens: out } } : m,
+                      ),
+                    }));
+                  }
                 }
               } else if (currentEvent === 'error') {
                 throw new Error(data.detail ?? 'Stream error');
@@ -429,11 +625,19 @@ export const useChatStore = create<ChatState>((set, get) => {
 
       // Stream completed — finalise the message.
       // Preserve thinking text and todos so they don't disappear.
+      // Auto-complete any in_progress todos when streaming ends.
+      const currentTodos = get().todos;
+      const finalTodos = currentTodos.length
+        ? currentTodos.map((td: TodoItem) =>
+            td.status === 'in_progress' ? { ...td, status: 'completed' as const } : td,
+          )
+        : undefined;
       set((state) => ({
         currentSessionId: sessionIdResolved ?? state.currentSessionId,
         isStreaming: false,
         streamingMsgId: null,
         thinkingText: '',
+        todos: finalTodos ?? state.todos,
         messages: state.messages.map((m) =>
           m.id === msgId
             ? {
@@ -441,7 +645,11 @@ export const useChatStore = create<ChatState>((set, get) => {
                 content: accumulated,
                 streaming: false,
                 thinking: state.thinkingText || m.thinking,
-                todos: state.todos.length ? state.todos : m.todos,
+                todos: finalTodos ?? m.todos,
+                // Stream closed — no delegation can still be running.
+                delegations: m.delegations
+                  ? m.delegations.map((d) => ({ ...d, running: false }))
+                  : m.delegations,
               }
             : m,
         ),
@@ -467,6 +675,9 @@ export const useChatStore = create<ChatState>((set, get) => {
                 streaming: false,
                 thinking: state.thinkingText || m.thinking,
                 todos: state.todos.length ? state.todos : m.todos,
+                delegations: m.delegations
+                  ? m.delegations.map((d) => ({ ...d, running: false }))
+                  : m.delegations,
               }
             : m,
         ),
@@ -485,7 +696,6 @@ export const useChatStore = create<ChatState>((set, get) => {
     thinkingText: '',
     todos: [],
     delegationRecords: [],
-    tokenUsage: null,
 
     loadSessions: async () => {
       try {
@@ -521,21 +731,36 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     selectSession: async (sessionId: string | null) => {
       if (get().isStreaming) return;
-      set({ currentSessionId: sessionId, messages: [], error: null, thinkingText: '', todos: [], tokenUsage: null });
+      set({ currentSessionId: sessionId, messages: [], error: null, thinkingText: '', todos: [] });
       if (sessionId) await get().loadHistory(sessionId);
     },
 
     newSession: () => {
       if (get().isStreaming) return;
-      set({ currentSessionId: null, messages: [], error: null, thinkingText: '', todos: [], tokenUsage: null });
+      set({ currentSessionId: null, messages: [], error: null, thinkingText: '', todos: [] });
     },
 
-    sendMessage: async (content: string) => {
-      const { isStreaming, currentSessionId } = get();
-      if (isStreaming || !content.trim()) return;
+    renameSession: async (sessionId: string, title: string) => {
+      try {
+        await apiClient.post(`/chat/sessions/${sessionId}/rename`, { title });
+        // Update local state
+        const sessions = get().sessions.map((s) =>
+          s.session_id === sessionId ? { ...s, title: title.trim() } : s
+        );
+        set({ sessions });
+      } catch (err) {
+        set({ error: `重命名会话失败：${apiErrorMessage(err)}` });
+        throw err;
+      }
+    },
 
-      // Reset the todo panel and token usage for the new turn.
-      set({ todos: [], tokenUsage: null });
+    sendMessage: async (content: string, attachments?: Attachment[]) => {
+      const { isStreaming, currentSessionId } = get();
+      const hasAttachments = !!attachments?.length;
+      if (isStreaming || (!content.trim() && !hasAttachments)) return;
+
+      // Reset the todo panel for the new turn.
+      set({ todos: [] });
 
       const userMsgId = uid('usr');
       const placeholderId = uid('ast');
@@ -547,7 +772,13 @@ export const useChatStore = create<ChatState>((set, get) => {
         streamingMsgId: placeholderId,
         messages: [
           ...state.messages,
-          { id: userMsgId, role: 'user', content: content.trim(), timestamp: now },
+          {
+            id: userMsgId,
+            role: 'user',
+            content: content.trim(),
+            timestamp: now,
+            attachments: hasAttachments ? attachments : undefined,
+          },
           {
             id: placeholderId,
             role: 'assistant',
@@ -558,7 +789,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         ],
       }));
 
-      await sendViaStream(placeholderId, currentSessionId, content.trim());
+      await sendViaStream(placeholderId, currentSessionId, content.trim(), attachments);
     },
 
     stopStreaming: () => {
@@ -618,7 +849,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           `${apiClient.defaults.baseURL}/chat/${agentId}/sessions/${currentSessionId}/approval/stream`,
           {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
             body: JSON.stringify({
               decision,
               edited_args: editedArgs ?? undefined,
@@ -628,6 +859,10 @@ export const useChatStore = create<ChatState>((set, get) => {
         );
 
         if (!resp.ok) {
+          if (resp.status === 401) {
+            clearAuthToken();
+            redirectToLogin();
+          }
           const errBody = await resp.json().catch(() => ({ detail: resp.statusText }));
           throw new Error((errBody as { detail?: string }).detail ?? resp.statusText);
         }
@@ -689,13 +924,40 @@ export const useChatStore = create<ChatState>((set, get) => {
                 } else if (currentEvent === 'todo') {
                   const todos = Array.isArray(data.todos) ? data.todos : [];
                   if (todos.length > 0) {
-                    set({ todos: todos as TodoItem[] });
+                    const msgId = get().streamingMsgId;
+                    set((state) => ({
+                      todos: todos as TodoItem[],
+                      messages: msgId
+                        ? state.messages.map((m) =>
+                            m.id === msgId ? { ...m, todos: todos as TodoItem[] } : m,
+                          )
+                        : state.messages,
+                    }));
+                  }
+                } else if (currentEvent === 'a2ui') {
+                  // Interactive surface after an approval resume.
+                  const surface = parseA2uiPayload(data as Record<string, unknown>);
+                  if (surface) {
+                    set((state) => ({
+                      messages: state.messages.map((m) =>
+                        m.id === approvalMsgId ? withA2uiSurface(m, surface) : m,
+                      ),
+                    }));
                   }
                 } else if (currentEvent === 'token_usage') {
+                  // Cumulative token consumption — attach to the current
+                  // streaming assistant message so it appears inline.
                   const inp = Number(data.input_tokens ?? 0);
                   const out = Number(data.output_tokens ?? 0);
                   if (inp || out) {
-                    set({ tokenUsage: { input_tokens: inp, output_tokens: out } });
+                    const msgId = get().streamingMsgId;
+                    if (msgId) {
+                      set((state) => ({
+                        messages: state.messages.map((m) =>
+                          m.id === msgId ? { ...m, tokenUsage: { input_tokens: inp, output_tokens: out } } : m,
+                        ),
+                      }));
+                    }
                   }
                 } else if (currentEvent === 'interrupts') {
                   // Another round of approval needed.
@@ -718,6 +980,8 @@ export const useChatStore = create<ChatState>((set, get) => {
                       ],
                     }));
                     await get().loadSessions();
+                    // Approval chain continues — refresh the inbox badge.
+                    void useInboxStore.getState().refreshPendingCount();
                     return;
                   }
                 } else if (currentEvent === 'done') {
@@ -725,8 +989,15 @@ export const useChatStore = create<ChatState>((set, get) => {
                   // main stream (some models only report usage here).
                   const inp = Number(data.input_tokens ?? 0);
                   const out = Number(data.output_tokens ?? 0);
-                  if ((inp || out) && !get().tokenUsage) {
-                    set({ tokenUsage: { input_tokens: inp, output_tokens: out } });
+                  if (inp || out) {
+                    const msgId = get().streamingMsgId;
+                    if (msgId) {
+                      set((state) => ({
+                        messages: state.messages.map((m) =>
+                          m.id === msgId && !m.tokenUsage ? { ...m, tokenUsage: { input_tokens: inp, output_tokens: out } } : m,
+                        ),
+                      }));
+                    }
                   }
                 } else if (currentEvent === 'error') {
                   throw new Error(data.detail ?? 'Stream error');
@@ -740,10 +1011,18 @@ export const useChatStore = create<ChatState>((set, get) => {
         }
 
         // Stream completed — finalise the message.
+        // Auto-complete any in_progress todos when streaming ends.
+        const currentTodos = get().todos;
+        const finalTodos = currentTodos.length
+          ? currentTodos.map((td: TodoItem) =>
+              td.status === 'in_progress' ? { ...td, status: 'completed' as const } : td,
+            )
+          : undefined;
         set((state) => ({
           isStreaming: false,
           streamingMsgId: null,
           thinkingText: '',
+          todos: finalTodos ?? state.todos,
           messages: [
             ...clearPrevApproval(state.messages).map((m) =>
               m.id === approvalMsgId
@@ -752,13 +1031,15 @@ export const useChatStore = create<ChatState>((set, get) => {
                     content: accumulated,
                     streaming: false,
                     thinking: state.thinkingText || m.thinking,
-                    todos: state.todos.length ? state.todos : m.todos,
+                    todos: finalTodos ?? m.todos,
                   }
                 : m,
             ),
           ],
         }));
         await get().loadSessions();
+        // Approval resolved — refresh the inbox badge immediately.
+        void useInboxStore.getState().refreshPendingCount();
       } catch (err) {
         set((state) => ({
           error: apiErrorMessage(err),
@@ -790,3 +1071,8 @@ export const useChatStore = create<ChatState>((set, get) => {
     },
   };
 });
+
+/* ───────── Dev hook: expose store on window for E2E widget tests ───────── */
+if (typeof window !== 'undefined') {
+  (window as unknown as Record<string, unknown>).__chatStore = useChatStore;
+}

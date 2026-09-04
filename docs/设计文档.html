@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentCore 设计文档</title>
+<style>
+  :root {
+    --primary: #4285f4;
+    --primary-light: #e8f0fe;
+    --success: #34a853;
+    --warning: #fbbc05;
+    --danger: #ea4335;
+    --text: #202124;
+    --text-secondary: #5f6368;
+    --bg: #ffffff;
+    --bg-secondary: #f8f9fa;
+    --border: #dadce0;
+    --code-bg: #f1f3f4;
+    --shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.08);
+    --shadow-lg: 0 4px 16px rgba(0,0,0,0.12);
+    --radius: 8px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans SC', sans-serif;
+    color: var(--text); line-height: 1.7; background: var(--bg-secondary);
+  }
+  .top-nav {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 1000;
+    background: var(--bg); border-bottom: 1px solid var(--border);
+    height: 56px; display: flex; align-items: center; padding: 0 24px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  }
+  .top-nav .logo { font-size: 18px; font-weight: 700; color: var(--primary); display: flex; align-items: center; gap: 8px; }
+  .top-nav .version { font-size: 12px; background: var(--primary-light); color: var(--primary); padding: 2px 8px; border-radius: 12px; margin-left: 8px; font-weight: 500; }
+  .layout { display: flex; margin-top: 56px; min-height: calc(100vh - 56px); }
+  .sidebar {
+    width: 280px; position: fixed; top: 56px; bottom: 0; left: 0;
+    background: var(--bg); border-right: 1px solid var(--border);
+    overflow-y: auto; padding: 16px 0;
+  }
+  .sidebar h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-secondary); padding: 12px 20px 6px; font-weight: 600; }
+  .sidebar a { display: block; padding: 7px 20px; color: var(--text-secondary); text-decoration: none; font-size: 14px; border-left: 3px solid transparent; transition: all 0.15s; }
+  .sidebar a:hover { background: var(--bg-secondary); color: var(--text); }
+  .sidebar a.active { color: var(--primary); background: var(--primary-light); border-left-color: var(--primary); font-weight: 500; }
+  .main { margin-left: 280px; flex: 1; max-width: 960px; padding: 32px 40px 80px; }
+  .hero { background: linear-gradient(135deg, #1a73e8 0%, #34a853 100%); color: white; padding: 48px 40px; border-radius: 16px; margin-bottom: 40px; box-shadow: var(--shadow-lg); }
+  .hero h1 { font-size: 36px; font-weight: 700; margin-bottom: 12px; }
+  .hero p { font-size: 16px; opacity: 0.9; max-width: 600px; line-height: 1.6; }
+  .hero .meta { margin-top: 16px; font-size: 13px; opacity: 0.7; }
+  .section { margin-bottom: 48px; scroll-margin-top: 72px; }
+  .section h2 { font-size: 24px; font-weight: 700; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 2px solid var(--primary); display: flex; align-items: center; gap: 10px; }
+  .section h2 .icon { font-size: 28px; }
+  .section h3 { font-size: 18px; font-weight: 600; margin: 24px 0 12px; }
+  .section h4 { font-size: 15px; font-weight: 600; margin: 16px 0 8px; color: var(--text-secondary); }
+  .section p { margin-bottom: 12px; }
+  .section ul, .section ol { margin: 8px 0 16px 24px; }
+  .section li { margin-bottom: 6px; }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; background: var(--bg); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); }
+  th { background: var(--bg-secondary); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); padding: 12px 16px; text-align: left; border-bottom: 2px solid var(--border); }
+  td { padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 14px; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--bg-secondary); }
+  code { background: var(--code-bg); padding: 2px 6px; border-radius: 4px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 13px; }
+  pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: var(--radius); overflow-x: auto; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 13px; line-height: 1.6; margin: 12px 0; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .callout { padding: 16px 20px; border-radius: var(--radius); margin: 16px 0; border-left: 4px solid; }
+  .callout-info { background: #e8f0fe; border-color: var(--primary); }
+  .callout-warn { background: #fef7e0; border-color: var(--warning); }
+  .callout-danger { background: #fce8e6; border-color: var(--danger); }
+  .callout-title { font-weight: 600; margin-bottom: 4px; }
+  .card { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; box-shadow: var(--shadow); }
+  .card h4 { margin-top: 0; color: var(--primary); font-size: 15px; }
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin: 16px 0; }
+  .card-grid .card { margin-bottom: 0; }
+  .arch-diagram { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; margin: 20px 0; box-shadow: var(--shadow); }
+  .arch-layer { border: 2px solid; border-radius: var(--radius); padding: 16px; margin-bottom: 12px; text-align: center; }
+  .arch-layer-blue { border-color: var(--primary); background: var(--primary-light); }
+  .arch-layer-green { border-color: var(--success); background: #e6f4ea; }
+  .arch-layer-orange { border-color: #e37400; background: #fef7e0; }
+  .arch-layer-purple { border-color: #9c27b0; background: #f3e5f5; }
+  .arch-layer-title { font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+  .arch-layer-items { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .arch-node { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; font-size: 12px; font-weight: 500; }
+  .arch-arrow { text-align: center; font-size: 20px; color: var(--text-secondary); margin: 4px 0; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+  .badge-blue { background: var(--primary-light); color: var(--primary); }
+  .badge-green { background: #e6f4ea; color: var(--success); }
+  .badge-yellow { background: #fef7e0; color: #e37400; }
+  .badge-red { background: #fce8e6; color: var(--danger); }
+  .tree { font-family: 'JetBrains Mono', monospace; font-size: 13px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 20px; margin: 12px 0; overflow-x: auto; }
+  @media (max-width: 1024px) { .sidebar { display: none; } .main { margin-left: 0; padding: 24px 20px; } }
+  @media print { .top-nav, .sidebar { display: none; } .main { margin-left: 0; max-width: 100%; } }
+</style>
+</head>
+<body>
+<nav class="top-nav">
+  <div class="logo">
+    <svg viewBox="0 0 28 28" fill="none" width="28" height="28"><circle cx="14" cy="14" r="12" fill="#4285f4"/><path d="M9 14l3 3 7-7" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    AgentCore 设计文档
+    <span class="version">v2.0</span>
+  </div>
+</nav>
+<div class="layout">
+<aside class="sidebar">
+  <h3>架构</h3>
+  <a href="#overview" class="active">系统架构总览</a>
+  <a href="#backend">后端架构</a>
+  <a href="#runtime">Agent 运行时</a>
+  <a href="#chat-engine">聊天引擎</a>
+  <a href="#sandbox">沙箱子系统</a>
+  <h3>子系统</h3>
+  <a href="#cron">定时任务</a>
+  <a href="#memory-sys">记忆系统</a>
+  <a href="#security-sys">安全系统</a>
+  <h3>前端</h3>
+  <a href="#frontend">前端架构</a>
+  <a href="#data-model">数据模型</a>
+  <a href="#api">API 设计</a>
+  <h3>依赖与构建</h3>
+  <a href="#deps">第三方依赖</a>
+  <a href="#build">构建与部署</a>
+  <a href="#testing">测试策略</a>
+</aside>
+<main class="main">
+
+<div class="hero">
+  <h1>AgentCore 设计文档</h1>
+  <p>从技术视角描述 AgentCore 的系统架构、模块设计、数据模型、API 设计和关键技术决策。</p>
+  <div class="meta">版本 2.0 &nbsp;·&nbsp; 基于代码实际实现 &nbsp;·&nbsp; 2026-08-31</div>
+</div>
+
+<section class="section" id="overview">
+  <h2><span class="icon">️</span> 系统架构总览</h2>
+  <h3>四层架构</h3>
+  <div class="arch-diagram">
+    <div class="arch-layer arch-layer-blue">
+      <div class="arch-layer-title">前端 Console</div>
+      <div class="arch-layer-items">
+        <span class="arch-node">React 19</span><span class="arch-node">TypeScript</span><span class="arch-node">Ant Design</span><span class="arch-node">Zustand</span><span class="arch-node">Vite</span>
+      </div>
+    </div>
+    <div class="arch-arrow">▼ HTTP / SSE</div>
+    <div class="arch-layer arch-layer-green">
+      <div class="arch-layer-title">FastAPI 应用层</div>
+      <div class="arch-layer-items">
+        <span class="arch-node">路由分发</span><span class="arch-node">请求校验</span><span class="arch-node">中间件</span><span class="arch-node">生命周期管理</span>
+      </div>
+    </div>
+    <div class="arch-arrow">▼</div>
+    <div class="arch-layer arch-layer-orange">
+      <div class="arch-layer-title">Agent 运行时层</div>
+      <div class="arch-layer-items">
+        <span class="arch-node">AgentFactory</span><span class="arch-node">deepagents SDK</span><span class="arch-node">LangGraph 图执行</span><span class="arch-node">Checkpointer</span><span class="arch-node">中间件链</span>
+      </div>
+    </div>
+    <div class="arch-arrow">▼</div>
+    <div class="arch-layer arch-layer-purple">
+      <div class="arch-layer-title">基础设施层</div>
+      <div class="arch-layer-items">
+        <span class="arch-node">SQLite</span><span class="arch-node">APScheduler</span><span class="arch-node">Docker</span><span class="arch-node">OpenSandbox</span><span class="arch-node">AIO Sandbox</span>
+      </div>
+    </div>
+  </div>
+  <h3>核心设计理念</h3>
+  <table>
+    <tr><th>理念</th><th>说明</th></tr>
+    <tr><td>请求驱动</td><td>Agent 无常驻进程，每次调用在当次请求内执行图计算并返回</td></tr>
+    <tr><td>配置即状态</td><td>Agent 的所有配置存储在 agent.json，是唯一事实来源</td></tr>
+    <tr><td>图缓存+失效</td><td>编译后的 LangGraph 图内存缓存，配置变更时自动失效重建</td></tr>
+    <tr><td>工作区隔离</td><td>每个 Agent 拥有独立的文件系统目录</td></tr>
+    <tr><td>可插拔后端</td><td>本地文件系统 / OpenSandbox / AIO Sandbox 可切换</td></tr>
+  </table>
+</section>
+
+<section class="section" id="backend">
+  <h2><span class="icon">️</span> 后端架构</h2>
+  <h3>目录结构</h3>
+  <div class="tree">
+src/agentcore/
+├── api.py                    # FastAPI 应用入口 + 生命周期管理
+├── main.py                   # uvicorn 启动入口
+├── constants.py              # 全局常量（内置工具、菜单定义）
+├── menu.py                   # 导航信息架构
+├── repository.py             # 数据持久化抽象
+├── service.py                # 业务逻辑服务层
+── runtime/                  # 运行时核心（26 个模块）
+│   ├── agent_factory.py      # Agent 配置 → deepagents 映射
+│   ├── agent_runtime.py      # Agent 图执行运行时
+│   ├── agent_router.py       # Agent CRUD API（912 行）
+│   ├── chat_router.py        # 聊天核心（SSE/同步/审批，3473 行）
+│   ├── workspace.py          # 工作区管理（文件/内核/system prompt）
+│   ├── multi_agent_manager.py # 多 Agent 协调管理
+│   ├── subagent_registry.py  # 子 Agent 注册表
+│   ├── model_factory.py      # 模型实例化工厂
+│   ├── model_store.py        # 模型配置持久化
+│   ├── models_router.py      # 模型管理 API
+│   ├── tools_router.py       # 工具管理 API
+│   ├── mcp_router.py         # MCP 服务器管理 API
+│   ├── mcp_client.py         # MCP 客户端连接管理
+│   ├── skills_router.py      # 技能管理 API（911 行）
+│   ├── files_router.py       # 文件管理 API
+│   ├── envs_router.py        # 环境变量管理 API
+│   ├── security_router.py    # 安全配置 API
+│   ├── memory_router.py      # 记忆管理 API
+│   ├── memory_consolidation.py # 记忆巩固后台任务
+│   ├── cron_router.py        # 定时任务 API
+│   ├── cron_manager.py       # 定时任务调度器（1019 行）
+│   ├── heartbeat.py          # 心跳巡检逻辑
+│   ├── heartbeat_router.py   # 心跳管理 API
+│   ├── token_router.py       # Token 追踪 API
+│   ├── stats_router.py       # 统计 API
+│   ├── debug_router.py       # 调试日志 API
+│   ├── audit.py              # 审计日志
+│   ├── approval_cleanup.py   # 审批过期清理
+│   ├── sse_heartbeat.py      # SSE 长连接保活
+│   └── paths.py              # 路径管理
+└── sandbox/                  # 沙箱子系统（8 个模块）
+    ├── factory.py            # 沙箱后端工厂
+    ├── aio_sandbox.py        # AIO Sandbox 后端实现
+    ├── client.py             # 沙箱 HTTP 客户端
+    ├── config.py             # 沙箱配置
+    ├── lifecycle.py          # 沙箱会话生命周期管理
+    ├── sync_engine.py        # 双向文件同步引擎
+    ├── router.py             # 沙箱管理 API
+    └── seeder.py             # 沙箱配置种子
+  </div>
+
+  <h3>生命周期管理（Lifespan）</h3>
+  <div class="callout callout-info">
+    <div class="callout-title">启动阶段</div>
+    1. 初始化文件日志（logs/backend.log）<br>
+    2. 确保数据目录存在 + 工作区布局迁移<br>
+    3. 加载持久化环境变量（envs.json → os.environ）<br>
+    4. 创建核心组件（ControlPlaneStore / AgentFactory / AgentRuntime / AgentService）<br>
+    5. 清理孤儿工作区目录<br>
+    6. 创建 ChatState（checkpointer + 图缓存）<br>
+    7. 确保 Default Agent 存在<br>
+    8. 种子化全局技能池<br>
+    9. 启动 CronManager（加载持久化任务 + 注册内部任务）<br>
+    10. 启动记忆巩固调度<br>
+    11. 启动审批过期清理调度
+  </div>
+</section>
+
+<section class="section" id="runtime">
+  <h2><span class="icon">🤖</span> Agent 运行时</h2>
+  <h3>Agent 创建流程</h3>
+  <div class="callout callout-info">
+    POST /api/agents → 生成 agent_id → 创建工作区目录 → 种子化内核文件 → 持久化 agent.json → 注册到 ControlPlaneStore → 使所有 enable_subagents=true 的主 Agent 图失效 → 返回 Agent 信息
+  </div>
+  <h3>Agent 图构建（AgentFactory）</h3>
+  <pre><code>create_deep_agent(
+    model=resolve_model(model_cfg),        # 从模型配置解析
+    tools=tools,                           # 内置工具 + MCP 工具
+    system_prompt=system_prompt,           # 内核文件组合
+    backend=backend,                       # 本地/沙箱后端
+    permissions=permissions,               # 文件权限规则
+    interrupt_on=interrupt_on,             # HITL 中断规则
+    memory=memory_paths,                   # 记忆文件路径
+    skills=skills_dir,                     # 技能目录
+    subagents=subagents,                   # 子 Agent 规格列表
+    middleware=extra_middleware,            # 额外中间件
+    enable_planning=enable_planning,       # 任务规划开关
+)</code></pre>
+  <h3>图缓存失效条件</h3>
+  <ul>
+    <li>模型配置变更</li>
+    <li>工具配置变更（启用/禁用）</li>
+    <li>内核文件变更（agent.md 等）</li>
+    <li>MCP 服务器变更</li>
+    <li>技能目录变更</li>
+    <li>安全配置变更（失效所有 Agent）</li>
+    <li>Agent settings 变更</li>
+    <li>子 Agent 白名单变更</li>
+  </ul>
+  <h3>内核文件系统</h3>
+  <table>
+    <tr><th>文件</th><th>用途</th><th>可编辑</th><th>可删除</th></tr>
+    <tr><td><code>agent.md</code></td><td>Agent 身份人设</td><td>✅</td><td></td></tr>
+    <tr><td><code>bootstrap.md</code></td><td>首次引导（完成后自动删除）</td><td>✅</td><td>✅</td></tr>
+    <tr><td><code>soul.md</code></td><td>核心人设（兼容）</td><td>✅</td><td></td></tr>
+    <tr><td><code>profile.md</code></td><td>用户偏好（兼容）</td><td>✅</td><td>❌</td></tr>
+  </table>
+  <p><strong>System Prompt 组合顺序</strong>：bootstrap.md → agent.md → profile.md → soul.md</p>
+</section>
+
+<section class="section" id="chat-engine">
+  <h2><span class="icon">💬</span> 聊天引擎</h2>
+  <h3>双端点架构</h3>
+  <table>
+    <tr><th>端点</th><th>协议</th><th>适用场景</th></tr>
+    <tr><td><code>POST /api/chat</code></td><td>REST 同步</td><td>简单对话、测试</td></tr>
+    <tr><td><code>POST /api/chat/stream</code></td><td>SSE 流式</td><td>生产使用，实时体验</td></tr>
+  </table>
+  <h3>SSE 五路投影</h3>
+  <table>
+    <tr><th>通道</th><th>事件名</th><th>内容</th></tr>
+    <tr><td>LLM 输出</td><td><code>messages</code></td><td>token 级文本、思考链、模型信息</td></tr>
+    <tr><td>子代理委派</td><td><code>subagents</code></td><td>委派开始/结束/结果</td></tr>
+    <tr><td>任务计划</td><td><code>todo</code></td><td>write_todos 的任务清单变更</td></tr>
+    <tr><td>HITL 中断</td><td><code>interrupts</code></td><td>中断事件、审批等待</td></tr>
+    <tr><td>Token 消耗</td><td><code>token_usage</code></td><td>每轮的 input/output token</td></tr>
+  </table>
+  <h3>HITL 审批流程</h3>
+  <div class="callout callout-warn">
+    Agent 调用危险工具 → deepagents SDK 触发 interrupt() → ChatRouter 检测到 interrupt event → 暂停图执行 → 用户通过 POST /api/chat/approve 提交决策（approve/edit/reject/respond）→ 决策回写 Checkpointer → 图恢复执行 → 审计日志记录
+  </div>
+</section>
+
+<section class="section" id="sandbox">
+  <h2><span class="icon">️</span> 沙箱子系统</h2>
+  <h3>抽象层设计</h3>
+  <div class="arch-diagram">
+    <div class="arch-layer arch-layer-green">
+      <div class="arch-layer-title">SandboxBackendFactory（ABC 接口）</div>
+    </div>
+    <div class="arch-arrow">▼</div>
+    <div style="display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;">
+      <div class="arch-layer arch-layer-blue" style="flex: 1; min-width: 200px;">
+        <div class="arch-layer-title">OpenSandboxFactory</div>
+        <div class="arch-layer-items"><span class="arch-node">OpenSandboxBackend</span></div>
+      </div>
+      <div class="arch-layer arch-layer-orange" style="flex: 1; min-width: 200px;">
+        <div class="arch-layer-title">AIOSandboxFactory</div>
+        <div class="arch-layer-items"><span class="arch-node">AIOSandboxBackend</span></div>
+      </div>
+    </div>
+  </div>
+  <h3>会话生命周期策略</h3>
+  <table>
+    <tr><th>策略</th><th>行为</th><th>适用场景</th></tr>
+    <tr><td>ephemeral</td><td>Agent 停止时销毁沙箱</td><td>开发/测试</td></tr>
+    <tr><td>pause-on-idle</td><td>空闲超时后暂停，聊天时恢复</td><td>生产（成本敏感）</td></tr>
+    <tr><td>persistent</td><td>持续运行直到 Agent 删除</td><td>长期运行任务</td></tr>
+  </table>
+  <h3>双向文件同步（SyncEngine）</h3>
+  <p>基于 SHA256 哈希的增量同步：</p>
+  <ul>
+    <li><strong>Push</strong>：计算本地文件 SHA256 → 对比 .sync_manifest.json → 仅传输变更文件</li>
+    <li><strong>Pull</strong>：获取容器文件列表 → 对比 manifest → 仅拉取变更文件</li>
+    <li><strong>冲突处理</strong>：双方修改时存储 .remote-conflict 副本，不静默覆盖</li>
+    <li><strong>排除规则</strong>：agent.json、隐藏文件、__pycache__、node_modules</li>
+  </ul>
+</section>
+
+<section class="section" id="cron">
+  <h2><span class="icon">⏰</span> 定时任务系统</h2>
+  <ul>
+    <li><strong>底层</strong>：APScheduler AsyncIOScheduler</li>
+    <li><strong>持久化</strong>：JSON 文件（.agentcore/cron_jobs.json）</li>
+    <li><strong>保活</strong>：60 秒间隔 keepalive 循环（防止 WSL2 事件循环休眠）</li>
+  </ul>
+  <h3>任务类型</h3>
+  <table>
+    <tr><th>类型</th><th>前缀</th><th>入用户列表</th><th>说明</th></tr>
+    <tr><td>用户任务</td><td>无</td><td>✅</td><td>用户通过 UI 创建的定时任务</td></tr>
+    <tr><td>内部任务</td><td><code>_internal:</code></td><td>❌</td><td>心跳、记忆巩固、审批清理</td></tr>
+  </table>
+  <h3>执行历史</h3>
+  <p>每个任务保留最近 50 条执行记录：success / error / skipped / interrupted / cancelled</p>
+</section>
+
+<section class="section" id="memory-sys">
+  <h2><span class="icon">🧠</span> 记忆系统</h2>
+  <h3>记忆层次</h3>
+  <div class="arch-diagram">
+    <div class="arch-layer arch-layer-blue">
+      <div class="arch-layer-title">短期记忆（会话内）</div>
+      <div class="arch-layer-items"><span class="arch-node">LangGraph Checkpointer</span></div>
+    </div>
+    <div class="arch-arrow">▼ 每日归档</div>
+    <div class="arch-layer arch-layer-green">
+      <div class="arch-layer-title">会话归档</div>
+      <div class="arch-layer-items"><span class="arch-node">memory/sessions/YYYY-MM-DD.md</span></div>
+    </div>
+    <div class="arch-arrow">▼ 巩固提取</div>
+    <div class="arch-layer arch-layer-orange">
+      <div class="arch-layer-title">长期记忆（跨会话）</div>
+      <div class="arch-layer-items"><span class="arch-node">MEMORY.md（事实和经验）</span><span class="arch-node">USER.md（用户偏好）</span></div>
+    </div>
+  </div>
+  <h3>记忆巩固管线</h3>
+  <div class="callout callout-info">
+    CronManager 触发（默认每天 03:00）→ 读取 .consolidation_state.json（水印）→ 扫描未处理的会话归档 → 逐个归档喂给 Agent → Agent 自动分析提取长期事实 → 合并到 MEMORY.md / USER.md → 更新水印 → 超过 retain_days 的归档移入 archived/
+  </div>
+</section>
+
+<section class="section" id="security-sys">
+  <h2><span class="icon">🛡️</span> 安全系统</h2>
+  <h3>权限模型</h3>
+  <div class="arch-diagram">
+    <div class="arch-layer arch-layer-blue">
+      <div class="arch-layer-title">全局安全设置（security.json）</div>
+      <div class="arch-layer-items"><span class="arch-node">启用/禁用开关</span><span class="arch-node">需审批工具列表</span><span class="arch-node">允许的决策类型</span></div>
+    </div>
+    <div class="arch-arrow">▼ 合并规则：Agent 级优先</div>
+    <div class="arch-layer arch-layer-green">
+      <div class="arch-layer-title">Agent 级别 interrupt_rules</div>
+      <div class="arch-layer-items"><span class="arch-node">工具 → 策略映射（allow/deny/interrupt）</span></div>
+    </div>
+  </div>
+  <h3>审计日志</h3>
+  <ul>
+    <li>存储：approval_audit_log.json（不可变追加，最多 10000 条）</li>
+    <li>原子写入：保证崩溃安全</li>
+    <li>记录内容：agent_id, session_id, decision, tool_name, final_args, operator, timestamp</li>
+  </ul>
+</section>
+
+<section class="section" id="frontend">
+  <h2><span class="icon">🎨</span> 前端架构</h2>
+  <h3>技术栈</h3>
+  <table>
+    <tr><th>技术</th><th>版本</th><th>用途</th></tr>
+    <tr><td>React</td><td>19</td><td>UI 框架</td></tr>
+    <tr><td>TypeScript</td><td>4.x</td><td>类型安全</td></tr>
+    <tr><td>Ant Design</td><td>5/6</td><td>UI 组件库</td></tr>
+    <tr><td>Zustand</td><td>—</td><td>状态管理</td></tr>
+    <tr><td>React Router</td><td>7</td><td>路由</td></tr>
+    <tr><td>Vite</td><td>—</td><td>构建工具</td></tr>
+  </table>
+  <h3>状态管理</h3>
+  <div class="card-grid">
+    <div class="card"><h4>appStore</h4><p>主题、侧边栏、全局配置</p></div>
+    <div class="card"><h4>agentStore</h4><p>Agent 列表、当前选中 Agent、配置</p></div>
+    <div class="card"><h4>chatStore</h4><p>当前会话、消息列表、流式状态、审批状态</p></div>
+    <div class="card"><h4>inboxStore</h4><p>待审批事项</p></div>
+  </div>
+  <h3>路由架构</h3>
+  <table>
+    <tr><th>类型</th><th>路由模式</th><th>页面</th></tr>
+    <tr><td>Agent 作用域</td><td><code>/agents/:agentId/&lt;section&gt;</code></td><td>chat, sessions, files, skills, tools, mcp, memory, heartbeat, sandbox, config, stats</td></tr>
+    <tr><td>全局页面</td><td>顶层路由</td><td>inbox, channels, cron-jobs, models, skill-pool, environments, security, sandbox-control, token-usage, backups, voice, debug, acp</td></tr>
+  </table>
+  <h3>国际化</h3>
+  <p>2 个语言（zh-CN / en），24 个功能模块的独立语言包。</p>
+</section>
+
+<section class="section" id="data-model">
+  <h2><span class="icon">📊</span> 数据模型</h2>
+  <h3>核心配置文件</h3>
+  <h4>agent.json</h4>
+  <pre><code>{
+  "agent_id": "default",
+  "description": "通用助手",
+  "model_id": "gpt-4o",
+  "backend": { "type": "local" },
+  "settings": {
+    "enable_subagents": false,
+    "enable_planning": false,
+    "interrupt_rules": {},
+    "subagents": [],
+    "skills": { "disabled": [] },
+    "tools": { "disabled": [] }
+  }
+}</code></pre>
+  <h4>security.json</h4>
+  <pre><code>{
+  "enabled": true,
+  "tools": ["delete", "write_file", "edit_file", "execute"],
+  "allowed_decisions": ["approve", "edit", "reject"]
+}</code></pre>
+  <h4>数据目录结构</h4>
+  <div class="tree">
+.agentcore/
+├── data/
+│   ├── agents.json              # Agent 状态注册表
+│   ├── token_usage.json         # Token 消耗记录
+│   ├── approval_audit_log.json  # 审计日志
+│   ├── security.json            # 安全配置
+│   ├── cron_jobs.json           # 定时任务
+│   ├── envs.json                # 环境变量
+│   └── models.json              # 模型注册表
+├── workspace/
+│   ── agent/
+│       └── {agent_id}/
+│           ├── agent.json       # Agent 配置
+│           ├── agent.md         # 身份人设
+│           ├── bootstrap.md     # 首次引导（完成后删除）
+│           ├── skills/          # 技能目录
+│           ├── memory/
+│           │   ├── MEMORY.md    # 长期记忆
+│           │   ├── USER.md      # 用户偏好
+│           │   ├── sessions/    # 会话归档
+│           │   └── archived/    # 过期归档
+│           ├── uploads/         # 上传文件
+│           └── .sync_manifest.json # 沙箱同步状态
+├── skill_pool/                  # 全局技能池
+├── checkpoints.db               # LangGraph Checkpointer (SQLite)
+└── checkpoints.db-{shm,wal}     # SQLite WAL 日志
+  </div>
+</section>
+
+<section class="section" id="api">
+  <h2><span class="icon">🔌</span> API 设计</h2>
+  <h3>API 路由总览</h3>
+  <table>
+    <tr><th>路由前缀</th><th>模块</th><th>说明</th></tr>
+    <tr><td><code>/api/agents</code></td><td>Agent CRUD</td><td>创建/列表/详情/启停/删除</td></tr>
+    <tr><td><code>/api/agents/{id}/settings</code></td><td>Agent 配置</td><td>更新模型/工具/委派等</td></tr>
+    <tr><td><code>/api/agents/{id}/kernel/{file}</code></td><td>内核文件</td><td>读写 agent.md 等</td></tr>
+    <tr><td><code>/api/agents/{id}/tools</code></td><td>工具管理</td><td>启用/禁用工具</td></tr>
+    <tr><td><code>/api/agents/{id}/sessions</code></td><td>会话管理</td><td>列表/历史</td></tr>
+    <tr><td><code>/api/chat</code></td><td>聊天（同步）</td><td>发送消息</td></tr>
+    <tr><td><code>/api/chat/stream</code></td><td>聊天（SSE）</td><td>流式对话</td></tr>
+    <tr><td><code>/api/chat/approve</code></td><td>审批</td><td>HITL 决策回写</td></tr>
+    <tr><td><code>/api/models</code></td><td>模型管理</td><td>CRUD + 连接测试</td></tr>
+    <tr><td><code>/api/mcp/{agent_id}</code></td><td>MCP 管理</td><td>per-agent MCP 配置</td></tr>
+    <tr><td><code>/api/skills-pool</code></td><td>技能池</td><td>全局技能 CRUD</td></tr>
+    <tr><td><code>/api/files/{agent_id}</code></td><td>文件管理</td><td>tree/content/upload/download</td></tr>
+    <tr><td><code>/api/envs</code></td><td>环境变量</td><td>CRUD</td></tr>
+    <tr><td><code>/api/security</code></td><td>安全配置</td><td>全局 HITL 设置</td></tr>
+    <tr><td><code>/api/memory/{agent_id}</code></td><td>记忆管理</td><td>记忆文件/巩固</td></tr>
+    <tr><td><code>/api/cron</code></td><td>定时任务</td><td>CRUD + 执行历史</td></tr>
+    <tr><td><code>/api/heartbeat/{agent_id}</code></td><td>心跳</td><td>配置/状态/手动触发</td></tr>
+    <tr><td><code>/api/token-usage</code></td><td>Token 统计</td><td>聚合查询</td></tr>
+    <tr><td><code>/api/stats</code></td><td>统计</td><td>仪表盘数据</td></tr>
+    <tr><td><code>/api/debug</code></td><td>调试</td><td>后端日志查看</td></tr>
+    <tr><td><code>/api/sandbox</code></td><td>沙箱</td><td>连接/状态/操作</td></tr>
+  </table>
+</section>
+
+<section class="section" id="deps">
+  <h2><span class="icon">📦</span> 第三方依赖</h2>
+  <div class="card-grid">
+    <div class="card">
+      <h4>deepagents SDK</h4>
+      <p><strong>角色</strong>：Agent 运行时引擎（核心依赖）<br>
+      <strong>能力</strong>：LangGraph 图编译与执行、中间件架构、文件系统工具、子 Agent 委派、权限控制、Checkpointer<br>
+      <strong>版本</strong>：>=0.7.0</p>
+    </div>
+    <div class="card">
+      <h4>OpenSandbox（阿里巴巴）</h4>
+      <p><strong>角色</strong>：容器编排层（可选）<br>
+      <strong>能力</strong>：Docker/K8s 容器生命周期管理、多语言 SDK、网络策略与凭证管理、MCP 原生集成<br>
+      <strong>版本</strong>：>=0.3.0</p>
+    </div>
+    <div class="card">
+      <h4>AIO Sandbox</h4>
+      <p><strong>角色</strong>：容器内执行环境（可选）<br>
+      <strong>能力</strong>：单容器集成 Shell + 浏览器 + VSCode + Jupyter + MCP Hub<br>
+      <strong>镜像</strong>：ghcr.io/agent-infra/sandbox:latest</p>
+    </div>
+    <div class="card">
+      <h4>langchain-sandbox-opensandbox</h4>
+      <p><strong>角色</strong>：OpenSandbox → deepagents 桥接层<br>
+      <strong>提供</strong>：OpenSandboxBackend，将 OpenSandbox SDK 封装为 deepagents 的 SandboxBackendProtocol</p>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="build">
+  <h2><span class="icon">🔨</span> 构建与部署</h2>
+  <h3>本地开发</h3>
+  <pre><code># 后端
+python -m uvicorn agentcore.api:app --host 127.0.0.1 --port 8000 --reload
+
+# 前端（开发模式）
+cd console && npm run dev</code></pre>
+  <h3>生产构建</h3>
+  <pre><code># 前端构建
+cd console && npm run build
+# 构建产物自动复制到 src/agentcore/web/
+
+# 后端打包
+python -m build</code></pre>
+  <h3>子路径部署</h3>
+  <p>通过 <code>AGENTCORE_BASE_PATH</code> 环境变量配置，后端 BasePathMiddleware 自动剥离前缀，前端通过 window.__AGENTCORE_BASE_PATH__ 运行时注入。</p>
+</section>
+
+<section class="section" id="testing">
+  <h2><span class="icon">🧪</span> 测试策略</h2>
+  <h3>单元测试</h3>
+  <p>tests/ 目录下 20+ 测试文件，覆盖：Agent 工厂、HITL、权限、沙箱、Cron、心跳、记忆巩固、MCP、技能等。使用 pytest + pytest-asyncio。</p>
+  <h3>端到端测试</h3>
+  <table>
+    <tr><th>脚本</th><th>覆盖</th></tr>
+    <tr><td><code>e2e_smoke.py</code></td><td>14 项基础冒烟测试</td></tr>
+    <tr><td><code>e2e_full_test.py</code></td><td>25 项全功能测试</td></tr>
+    <tr><td><code>e2e_deep_test.py</code></td><td>5 项深度功能测试（需 LLM API Key）</td></tr>
+  </table>
+  <h3>运行测试</h3>
+  <pre><code>python -m pytest -q
+python scripts/e2e_smoke.py      # 冒烟测试
+python scripts/e2e_full_test.py  # 全功能测试
+python scripts/e2e_deep_test.py  # 深度测试（需 API Key）</code></pre>
+</section>
+
+<div style="text-align: center; padding: 40px 0; color: var(--text-secondary); font-size: 13px; border-top: 1px solid var(--border); margin-top: 40px;">
+  <p>AgentCore 设计文档 v2.0 &nbsp;·&nbsp; 基于代码实际实现 &nbsp;·&nbsp; 2026-08-31</p>
+</div>
+
+</main>
+</div>
+<script>
+const sections = document.querySelectorAll('.section');
+const links = document.querySelectorAll('.sidebar a');
+function updateActiveLink() {
+  let current = '';
+  sections.forEach(section => { if (window.scrollY >= section.offsetTop - 80) current = section.getAttribute('id'); });
+  links.forEach(link => { link.classList.remove('active'); if (link.getAttribute('href') === '#' + current) link.classList.add('active'); });
+}
+window.addEventListener('scroll', updateActiveLink);
+window.addEventListener('load', updateActiveLink);
+links.forEach(link => { link.addEventListener('click', function(e) { e.preventDefault(); const target = document.querySelector(this.getAttribute('href')); if (target) target.scrollIntoView({ behavior: 'smooth' }); }); });
+</script>
+</body>
+</html>

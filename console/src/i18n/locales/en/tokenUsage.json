@@ -10,6 +10,7 @@
   "requestCount": "Requests",
   "dailyTrend": "Daily Trend",
   "agentBreakdown": "By Agent",
+  "modelBreakdown": "By Model",
   "dailyDetail": "Daily Detail",
   "date": "Date",
   "input": "Input",
@@ -17,5 +18,6 @@
   "total": "Total",
   "requests": "Requests",
   "noData": "Loading…",
-  "noDataAvailable": "No data"
+  "noDataAvailable": "No data",
+  "overview": "Overview"
 }

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   Badge,
-  Card,
   Space,
   Switch,
   Table,
@@ -14,11 +13,10 @@ import type { ColumnsType } from 'antd/es/table';
 import { apiClient } from '../../api/client';
 import { useAgentId } from '../../stores/agentStore';
 import { useI18n } from '../../i18n';
+import GoogleCard from '../../components/GoogleCard';
+import GooglePageHeader from '../../components/GooglePageHeader';
 
 const { Text } = Typography;
-
-/* ───────── Constants ───────── */
-const ORANGE = '#FF7F16';
 
 /* ───────── Types ───────── */
 interface ToolItem {
@@ -47,7 +45,7 @@ export default function ToolsPage() {
     } finally {
       setLoading(false);
     }
-  }, [agentId]);
+  }, [agentId, t]);
 
   useEffect(() => {
     void loadTools();
@@ -67,7 +65,7 @@ export default function ToolsPage() {
         setToggling(null);
       }
     },
-    [agentId],
+    [agentId, t],
   );
 
   const enabledCount = tools.filter((t) => t.enabled).length;
@@ -80,9 +78,13 @@ export default function ToolsPage() {
       render: (name: string, record) => (
         <Space>
           <Text code style={{ fontSize: 13 }}>{name}</Text>
-          {record.builtin && (
-            <Tag style={{ fontSize: 11, color: ORANGE, borderColor: '#ffd8b3', background: '#fff7ef' }}>
+          {record.builtin ? (
+            <Tag color="warning" style={{ fontSize: 11 }}>
               {t('tools.builtin')}
+            </Tag>
+          ) : (
+            <Tag color="processing" style={{ fontSize: 11 }}>
+              {t('tools.capability')}
             </Tag>
           )}
         </Space>
@@ -116,24 +118,19 @@ export default function ToolsPage() {
   ];
 
   return (
-    <div style={{ padding: 24 }}>
-      <Card
-        styles={{ body: { padding: 0 } }}
-        title={
-          <Space>
-            <ThunderboltOutlined style={{ color: ORANGE }} />
-            <span>{t('tools.title')}</span>
-            <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
-              {t('tools.subtitle', { enabled: enabledCount, total: tools.length })}
-            </Text>
-          </Space>
-        }
+    <div>
+      <GooglePageHeader
+        icon={<ThunderboltOutlined />}
+        title={t('tools.title')}
+        subtitle={t('tools.subtitle', { enabled: enabledCount, total: tools.length })}
         extra={
           <Text type="secondary" style={{ fontSize: 12 }}>
             {t('tools.currentAgent')}：<Text code style={{ fontSize: 12 }}>{agentId}</Text>
           </Text>
         }
-      >
+      />
+
+      <GoogleCard bodyStyle={{ padding: 0 }}>
         <Table<ToolItem>
           rowKey="name"
           size="middle"
@@ -142,7 +139,7 @@ export default function ToolsPage() {
           dataSource={tools}
           pagination={false}
         />
-      </Card>
+      </GoogleCard>
     </div>
   );
 }

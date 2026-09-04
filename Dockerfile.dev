@@ -1,0 +1,40 @@
+# =============================================================================
+# AgentCore - Dockerfile (Development Mode)
+#
+# Supports hot-reloading for development.
+#
+# Usage:
+#   docker build -f Dockerfile.dev -t agentcore-dev .
+#   docker run -p 8000:8000 -v ./src:/app/src agentcore-dev
+# =============================================================================
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Copy source tree first (needed for editable install)
+COPY src/ src/
+
+# Copy dependency files
+COPY pyproject.toml README.md ./
+
+# Install pip and upgrade (use cache mount for faster rebuilds)
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --upgrade pip setuptools wheel
+
+# Install all dependencies including dev dependencies
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -e ".[dev]"
+
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
+ENV PYTHONUNBUFFERED=1 \
+    AGENTCORE_DATA_DIR=/app/.agentcore \
+    AGENTCORE_PORT=8000 \
+    AGENTCORE_DEV_MODE=true \
+    PYTHONPATH=/app/src
+
+# Default: run uvicorn with --reload for hot reloading
+# Note: We cd to /app/src so that 'agentcore' is importable
+CMD ["sh", "-c", "cd /app/src && uvicorn agentcore.api:app --host 0.0.0.0 --port ${AGENTCORE_PORT} --reload --reload-dir ."]

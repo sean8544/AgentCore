@@ -1,0 +1,23 @@
+{
+  "title": "Agent Skills",
+  "subtitle": "{{agent}} has {{count}} skill(s) installed · toggles take effect immediately",
+  "goToPool": "Go to Skill Pool",
+  "enabledSection": "Enabled Skills",
+  "disabledSection": "Disabled Skills",
+  "noEnabled": "No enabled skills",
+  "view": "View",
+  "uninstall": "Uninstall",
+  "uninstallConfirm": "Uninstall {{skill}} from the current agent? The pool copy is not affected.",
+  "uninstallSuccess": "Uninstalled {{name}}",
+  "uninstallFailed": "Uninstall failed, please retry",
+  "enableSuccess": "Enabled {{name}}",
+  "disableSuccess": "Disabled {{name}}",
+  "toggleFailed": "Toggle failed, please retry",
+  "noDescription": "No description",
+  "empty": "No skills installed yet",
+  "emptyHint": "Installed skills are injected into the agent's system prompt with progressive disclosure",
+  "loadFailed": "Failed to load skills",
+  "contentLoadFailed": "Failed to load skill content",
+  "detail": "Skill Detail",
+  "detailTitle": "Skill: {{name}}"
+}

@@ -1,10 +1,11 @@
 """Built-in tools management router.
 
 Exposes per-agent built-in tool listing and enable/disable toggling under
-``/api/agents/{agent_id}/tools``.  Tool state is persisted in the agent's
-workspace ``agent.json`` (``tools.disabled`` list); toggling a tool
-invalidates the cached agent graph so the next chat rebuilds the agent
-with the updated tool set.
+``/api/agents/{agent_id}/tools``.  Built-in tool state is persisted in the
+agent's workspace ``agent.json`` (``tools.disabled`` list); *capability*
+tools (additive platform tools such as ``send_a2ui``) live in
+``settings.<flag>`` instead.  Toggling either kind invalidates the cached
+agent graph so the next chat rebuilds the agent with the updated tool set.
 
 Endpoints
 ---------
@@ -20,6 +21,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from agentcore.constants import BUILT_IN_TOOLS
+from agentcore.runtime.agent_ids import known_agent_ids
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,21 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     "grep": "按内容搜索文件",
     "execute": "执行 shell 命令",
     "task": "规划与管理子任务",
+}
+
+# Additive platform capability tools: tool name → (settings flag,
+# default-enabled, description).  Unlike BUILT_IN_TOOLS (subtracted from
+# the SDK harness via the exclusion middleware), these are appended to
+# the agent by the factory when their flag is on — the flag also gates
+# the matching prompt hint and SSE projection, so it is *not* stored in
+# ``tools.disabled``.  (``write_todos``/planning is intentionally *not*
+# listed here: its toggle lives on the Agent config page.)
+CAPABILITY_TOOLS: dict[str, tuple[str, bool, str]] = {
+    "send_a2ui": (
+        "enable_a2ui",
+        True,
+        "交互式 UI 卡片（A2UI）——向用户反问、收集表单、请求确认",
+    ),
 }
 
 
@@ -57,10 +74,9 @@ async def _resolve_workspace(request: Request, agent_id: str) -> Any:
     if workspace is not None:
         return workspace
 
-    # The agent may be known (persisted) but its workspace not loaded yet.
-    store = getattr(request.app.state, "store", None)
-    known = store is not None and agent_id in getattr(store, "agent_states", {})
-    if not known:
+    # The agent may be known (persisted state, runtime tracking or an
+    # on-disk workspace directory) but its workspace not loaded yet.
+    if agent_id not in known_agent_ids(request.app.state):
         raise HTTPException(status_code=404, detail="Agent not found")
 
     return await manager.get_or_create_workspace(agent_id)
@@ -73,7 +89,7 @@ async def _resolve_workspace(request: Request, agent_id: str) -> Any:
 
 @router.get("")
 async def list_tools(agent_id: str, request: Request) -> dict[str, Any]:
-    """List all built-in tools with their enabled state for the agent."""
+    """List all built-in and capability tools with their enabled state."""
     workspace = await _resolve_workspace(request, agent_id)
 
     config = workspace.read_agent_config()
@@ -88,6 +104,16 @@ async def list_tools(agent_id: str, request: Request) -> dict[str, Any]:
         }
         for tool_name in BUILT_IN_TOOLS
     ]
+    settings = config.get("settings", {}) or {}
+    tools.extend(
+        {
+            "name": tool_name,
+            "enabled": bool(settings.get(flag, default)),
+            "builtin": False,
+            "description": desc,
+        }
+        for tool_name, (flag, default, desc) in CAPABILITY_TOOLS.items()
+    )
     return {"agent_id": agent_id, "tools": tools}
 
 
@@ -95,25 +121,31 @@ async def list_tools(agent_id: str, request: Request) -> dict[str, Any]:
 async def toggle_tool(
     agent_id: str, tool_name: str, request: Request, body: dict
 ) -> dict[str, Any]:
-    """Enable or disable a built-in tool for the agent.
+    """Enable or disable a built-in or capability tool for the agent.
 
     Body: ``{"enabled": true | false}`` (defaults to ``true``).
     """
-    if tool_name not in BUILT_IN_TOOLS:
+    if tool_name not in BUILT_IN_TOOLS and tool_name not in CAPABILITY_TOOLS:
         raise HTTPException(status_code=404, detail=f"Tool {tool_name!r} not found")
 
     workspace = await _resolve_workspace(request, agent_id)
     config = workspace.read_agent_config()
 
     enabled = bool(body.get("enabled", True))
-    disabled = set(config.get("tools", {}).get("disabled", []))
 
-    if enabled:
-        disabled.discard(tool_name)
+    if tool_name in CAPABILITY_TOOLS:
+        # Additive tool: flip the settings flag that gates the tool,
+        # its prompt hint and its SSE projection together.
+        flag, _, _ = CAPABILITY_TOOLS[tool_name]
+        config.setdefault("settings", {})[flag] = enabled
     else:
-        disabled.add(tool_name)
+        disabled = set(config.get("tools", {}).get("disabled", []))
+        if enabled:
+            disabled.discard(tool_name)
+        else:
+            disabled.add(tool_name)
+        config.setdefault("tools", {})["disabled"] = sorted(disabled)
 
-    config.setdefault("tools", {})["disabled"] = sorted(disabled)
     workspace.write_agent_config(config)
 
     # Drop the cached agent graph so the next chat rebuilds the agent

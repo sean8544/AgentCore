@@ -1,54 +1,36 @@
-"""Shared helper: resolve all agent ids known to the system.
+"""Shared helper: resolve the set of agent ids considered "alive".
 
-Both :mod:`agentcore.runtime.agent_router` and
-:mod:`agentcore.runtime.models_router` used to carry their own
-(duplicate) ``_known_agent_ids`` implementation; this module hosts the
-single consolidated version.
+Only ``store.agent_states`` (backed by ``agents.json``) is treated as
+authoritative.  In-memory artefacts — loaded workspaces in
+:class:`MultiAgentManager`, runtime-tracked instances in
+:class:`AgentRuntime` — are deliberately **excluded**: a deleted agent can
+still linger there (e.g. because a browser tab hit ``/api/agents/{id}/...``
+before we finished the delete cleanup, which lazy-loaded its workspace
+back).  Counting those as "known" was the primary zombie-resurrection
+path: heartbeat / stats / sessions GET endpoints then transparently
+recreated the on-disk workspace on the next beat, and the phantom agent
+reappeared in the UI after a restart despite a successful purge.
 
-An agent id is considered known when it appears in any of:
-
-* the loaded workspaces (:class:`MultiAgentManager`),
-* the persisted agent states (:class:`ControlPlaneStore`),
-* the runtime-tracked instances (:class:`AgentRuntime`),
-* the on-disk workspace layout (``.agentcore/workspace/agent/*``).
+Callers that legitimately need to include "an agent that is currently
+being created and not yet persisted" (e.g. :class:`AgentService`) go
+through the write path directly and never consult this helper.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from agentcore.runtime import paths
-
 
 def known_agent_ids(state: Any) -> set[str]:
-    """Return all agent ids known to the system (loaded, persisted, or tracked).
+    """Return the set of persisted agent ids (``agents.json`` view).
 
     Parameters
     ----------
     state:
         The owning application's ``app.state`` (any object exposing the
-        optional ``agent_manager`` / ``store`` / ``runtime`` attributes).
+        optional ``store`` attribute).
     """
-    ids: set[str] = set()
-
-    manager = getattr(state, "agent_manager", None)
-    if manager is not None:
-        ids.update(manager.list_workspaces())
-
     store = getattr(state, "store", None)
-    if store is not None:
-        ids.update(getattr(store, "agent_states", {}).keys())
-
-    runtime = getattr(state, "runtime", None)
-    if runtime is not None:
-        ids.update(inst.agent_id for inst in runtime.list_agents())
-
-    # Fall back to the on-disk workspace layout.
-    root = paths.get_workspace_root()
-    if root.exists():
-        try:
-            ids.update(p.name for p in root.iterdir() if p.is_dir())
-        except OSError:
-            pass
-
-    return ids
+    if store is None:
+        return set()
+    return set(getattr(store, "agent_states", {}).keys())

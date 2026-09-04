@@ -88,6 +88,41 @@ class _ToolExclusionMiddleware(AgentMiddleware[Any, Any, Any]):
             request = request.override(tools=filtered)
         return await handler(request)
 
+
+class _SkillExclusionMiddleware(AgentMiddleware[Any, Any, Any]):
+    """Filter disabled workspace skills out of the loaded skill index.
+
+    The SDK's ``SkillsMiddleware`` (first in the base stack) scans the
+    whole workspace ``skills/`` directory into ``state['skills_metadata']``
+    and renders that list into the system prompt.  This middleware runs
+    later in the graph's ``before_agent`` chain, so its state update
+    overwrites the loaded index with only the enabled skills before the
+    model ever sees them — implementing per-agent skill toggling
+    (``agent.json`` ``skills.disabled``) without touching the SDK.
+    """
+
+    def __init__(self, *, disabled: frozenset[str]) -> None:
+        self._disabled = disabled
+
+    def _filtered_update(self, state: Any) -> dict[str, Any] | None:
+        metadata = state.get("skills_metadata")
+        if not isinstance(metadata, list):
+            return None
+        filtered = [
+            skill for skill in metadata
+            if skill.get("name") not in self._disabled
+        ]
+        if len(filtered) == len(metadata):
+            return None
+        return {"skills_metadata": filtered}
+
+    def before_agent(self, state: Any, runtime: Any, config: Any) -> dict[str, Any] | None:  # noqa: ARG002
+        return self._filtered_update(state)
+
+    async def abefore_agent(self, state: Any, runtime: Any, config: Any) -> dict[str, Any] | None:  # noqa: ARG002
+        return self._filtered_update(state)
+
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -214,17 +249,12 @@ def _create_backend(
 
     :class:`FilesystemBackend` is always created with
     ``virtual_mode=True`` so paths cannot escape the root via ``..``.
-    """
-    if workspace_dir is not None:
-        root_path = Path(workspace_dir)
-        root_path.mkdir(parents=True, exist_ok=True)
-        logger.info(
-            "Creating FilesystemBackend(root_dir=%s, virtual_mode=True) "
-            "bound to workspace",
-            root_path,
-        )
-        return FilesystemBackend(root_dir=root_path, virtual_mode=True)
 
+    Sandbox priority: when ``settings["backend"]["type"]`` is
+    ``"sandbox"``, the sandbox backend takes precedence over the
+    workspace FilesystemBackend — even when *workspace_dir* is set.
+    """
+    # --- Sandbox check FIRST (overrides workspace_dir) ---
     backend_cfg = settings.get("backend", {})
     backend_type = backend_cfg.get("type", BackendType.LOCAL)
 
@@ -240,7 +270,7 @@ def _create_backend(
         # no silent fallback to host execution.
         from agentcore.runtime.sandbox import SandboxUnavailableError, get_sandbox_factory
 
-        provider = backend_cfg.get("provider", "e2b")
+        provider = backend_cfg.get("provider", "opensandbox")
         try:
             factory = get_sandbox_factory(provider)
             backend_instance = factory.create()
@@ -257,6 +287,17 @@ def _create_backend(
                 f"Sandbox backend ({provider}) failed to initialise: {exc}. "
                 "The agent will not execute code until a sandbox is available."
             ) from exc
+
+    # --- Local backend: use workspace_dir if available ---
+    if workspace_dir is not None:
+        root_path = Path(workspace_dir)
+        root_path.mkdir(parents=True, exist_ok=True)
+        logger.info(
+            "Creating FilesystemBackend(root_dir=%s, virtual_mode=True) "
+            "bound to workspace",
+            root_path,
+        )
+        return FilesystemBackend(root_dir=root_path, virtual_mode=True)
 
     # No workspace_dir — custom root_dir bypass is intentionally NOT
     # supported; the only safe fallback is the ephemeral StateBackend.
@@ -355,6 +396,8 @@ def _map_interrupt_on(rules: list[dict[str, Any]]) -> dict[str, Any] | None:
 def _compute_excluded_tools(
     tools_cfg: dict[str, Any],
     backend_type: BackendType,
+    *,
+    enable_subagents: bool = False,
 ) -> frozenset[str]:
     """Determine which built-in tools must be excluded.
 
@@ -365,6 +408,8 @@ def _compute_excluded_tools(
       tool not listed is excluded.
     - ``execute`` is always excluded on non-sandbox backends regardless
       of configuration (sandbox hardening).
+    - ``task`` is excluded when ``enable_subagents`` is false so the
+      agent cannot delegate to subagents that were never injected.
 
     The result is further intersected with backend capability
     (:func:`compute_effective_tool_surface`) so tools the backend cannot
@@ -391,6 +436,10 @@ def _compute_excluded_tools(
     # even if the configuration tried to enable it explicitly.
     if backend_type != BackendType.SANDBOX:
         excluded = excluded | frozenset({"execute"})
+    # Subagent gating: when subagents are not enabled, the ``task``
+    # tool must be excluded so the LLM cannot attempt delegation.
+    if not enable_subagents:
+        excluded = excluded | frozenset({"task"})
     return excluded
 
 
@@ -454,6 +503,65 @@ def _create_write_todos_tool() -> Any:
     )
 
 
+# ---------------------------------------------------------------------------
+# A2UI (Agent-to-User Interface) tool
+# ---------------------------------------------------------------------------
+
+
+class _SendA2uiInput(BaseModel):
+    """Schema for the send_a2ui tool (module-level for Pydantic v2)."""
+
+    surface_title: str = Field(description="Short title describing the purpose of this UI")
+    components: list[dict[str, Any]] = Field(
+        description=(
+            "Flat A2UI v0.9 component list (JSON objects); exactly one "
+            "component must have id 'root'"
+        )
+    )
+    data: dict[str, Any] | None = Field(
+        default=None,
+        description="Initial data model; properties may bind via {'path': '/key'}",
+    )
+
+
+def _create_send_a2ui_tool() -> Any:
+    """Create a ``send_a2ui`` tool for rendering interactive UI cards.
+
+    Control-plane only: the tool body never touches the backend or
+    filesystem.  The actual A2UI envelopes are assembled and projected
+    by the SSE streaming layer (see ``chat_router``) when the tool call
+    is detected — the same pattern used for ``write_todos``.
+    """
+    from langchain_core.tools import StructuredTool
+
+    def _send_a2ui(
+        surface_title: str,
+        components: list[dict[str, Any]],
+        data: dict[str, Any] | None = None,
+    ) -> str:
+        """Render an interactive UI card (A2UI) to the user.
+
+        Use it to ask the user a question, collect form input or request
+        confirmation.  The user's interaction result will arrive as a
+        follow-up message.
+        """
+        return (
+            f"UI card '{surface_title}' rendered to the user. Wait for the "
+            "user's interaction; the result will arrive as a follow-up message."
+        )
+
+    return StructuredTool.from_function(
+        func=_send_a2ui,
+        name="send_a2ui",
+        description=(
+            "Render an interactive UI card (A2UI) to the user for questions, "
+            "confirmations or form collection. The user's interaction result "
+            "arrives as a follow-up message."
+        ),
+        args_schema=_SendA2uiInput,
+    )
+
+
 # ===================================================================
 # AgentFactory
 # ===================================================================
@@ -482,6 +590,7 @@ class AgentFactory:
         workspace_dir: Path | None = None,
         workspace: Any = None,
         subagents: list[Any] | None = None,
+        sandbox_backend: Any = None,
         **kwargs: Any,
     ) -> CompiledStateGraph:
         """Create a deepagents agent from an ``agent.json`` configuration.
@@ -551,9 +660,21 @@ class AgentFactory:
                 workspace.workspace_dir if workspace is not None
                 else workspace_dir
             )
+            # When the whole-workspace sandbox mirror is active, files live
+            # under the container root (e.g. /home/gem) instead of the
+            # backend root — prefix the SDK memory/skills paths so the
+            # middleware reads them where the sync engine pushes them.
+            backend_cfg = settings.get("backend", {}) or {}
+            path_prefix = ""
+            if backend_cfg.get("type") == "sandbox":
+                file_sync = backend_cfg.get("file_sync", {}) or {}
+                if file_sync.get("enabled", True) is not False:
+                    path_prefix = str(
+                        file_sync.get("container_root", "/home/gem")
+                    ).rstrip("/")
             if kwargs.get("memory") is None:
                 kernel_paths = [
-                    f"/{name}"
+                    f"{path_prefix}/{name}"
                     for name in ALL_KERNEL_FILE_NAMES
                     if (effective_ws_dir / name).exists()
                 ]
@@ -565,14 +686,16 @@ class AgentFactory:
                 if memory_dir.exists():
                     for mem_file in ["MEMORY.md", "USER.md"]:
                         if (memory_dir / mem_file).exists():
-                            memory_paths.append(f"/{MEMORY_DIR_NAME}/{mem_file}")
+                            memory_paths.append(
+                                f"{path_prefix}/{MEMORY_DIR_NAME}/{mem_file}"
+                            )
                 all_memory_paths = kernel_paths + memory_paths
                 if all_memory_paths:
                     kwargs["memory"] = all_memory_paths
             if kwargs.get("skills") is None:
                 skills_dir = effective_ws_dir / SKILLS_DIR_NAME
                 if skills_dir.exists() and skills_dir.is_dir():
-                    kwargs["skills"] = [f"/{SKILLS_DIR_NAME}/"]
+                    kwargs["skills"] = [f"{path_prefix}/{SKILLS_DIR_NAME}/"]
 
         # --- Model ---------------------------------------------------
         model_cfg = agent_config.get("model")
@@ -586,7 +709,13 @@ class AgentFactory:
             )
 
         # --- Backend -------------------------------------------------
-        backend = _create_backend(settings, workspace_dir)
+        # If a pre-created sandbox backend is provided (from session manager),
+        # use it directly instead of creating a new one via _create_backend.
+        if sandbox_backend is not None:
+            backend = sandbox_backend
+            logger.info("Using pre-created sandbox backend from session manager")
+        else:
+            backend = _create_backend(settings, workspace_dir)
 
         # --- Permissions ---------------------------------------------
         perm_cfgs = settings.get("permissions", [])
@@ -601,9 +730,16 @@ class AgentFactory:
             logger.info("HITL interrupt_on for tools: %s", list(interrupt_on.keys()))
 
         # --- Tool exclusion middleware -------------------------------
-        backend_type = _resolve_backend_type(settings)
+        # When a sandbox backend is provided, force SANDBOX backend type
+        # so the execute tool is not excluded.
+        if sandbox_backend is not None:
+            backend_type = BackendType.SANDBOX
+        else:
+            backend_type = _resolve_backend_type(settings)
         excluded = _compute_excluded_tools(
-            agent_config.get("tools", {}) or {}, backend_type
+            agent_config.get("tools", {}) or {},
+            backend_type,
+            enable_subagents=bool(settings.get("enable_subagents")),
         )
         extra_middleware: list[AgentMiddleware[Any, Any, Any]] = list(
             kwargs.pop("middleware", []) or []
@@ -618,6 +754,23 @@ class AgentFactory:
                 _ToolExclusionMiddleware(excluded=excluded)
             )
 
+        # --- Skill exclusion (per-agent skill toggling) ----------------
+        # Installed workspace skills can be disabled without uninstalling
+        # them (``agent.json`` ``skills.disabled``).  The SDK loads every
+        # skill under ``skills/``; this middleware drops the disabled
+        # ones from the loaded index so they never reach the prompt.
+        skills_cfg = agent_config.get("skills", {}) or {}
+        disabled_skills = frozenset(skills_cfg.get("disabled", []) or [])
+        if disabled_skills:
+            logger.info(
+                "Excluding disabled workspace skills via "
+                "skill-exclusion middleware: %s",
+                sorted(disabled_skills),
+            )
+            extra_middleware.append(
+                _SkillExclusionMiddleware(disabled=disabled_skills)
+            )
+
         # --- Planning / TodoList (Task 3.4) --------------------------
         # Opt-in via ``settings.enable_planning: true``.  Adds a
         # ``write_todos`` tool so the agent can maintain a structured
@@ -629,6 +782,17 @@ class AgentFactory:
             custom_tools = list(custom_tools or [])
             custom_tools.append(_create_write_todos_tool())
             logger.info("Planning enabled: write_todos tool added")
+
+        # --- A2UI interactive surfaces -------------------------------
+        # Enabled by default; opt out via ``settings.enable_a2ui: false``.
+        # Adds the ``send_a2ui`` control-plane tool so the agent can render
+        # interactive cards (questions / forms / confirmations) in the
+        # chat stream.  Subagent graphs are built independently by the
+        # registry and never inherit this tool.
+        if settings.get("enable_a2ui", True):
+            custom_tools = list(custom_tools or [])
+            custom_tools.append(_create_send_a2ui_tool())
+            logger.info("A2UI enabled: send_a2ui tool added")
 
         # --- MCP tools (optional, from workspace mcp.json) -----------
         # Enabled MCP servers are probed and their LangChain tools merged
@@ -667,6 +831,32 @@ class AgentFactory:
             )
             system_prompt = (
                 f"{system_prompt}{_plan_hint}" if system_prompt else _plan_hint
+            )
+        if settings.get("enable_a2ui", True):
+            # Teach the model the A2UI component conventions so the
+            # generated payloads validate against the basic catalog.
+            _a2ui_hint = (
+                "\n\n## 交互式 UI（A2UI）要求\n"
+                "当你需要向用户提问、请求确认或收集信息（表单）时，必须优先调用 send_a2ui 工具\n"
+                "生成交互卡片，而不是用纯文本提问。components 是扁平的 A2UI v0.9 组件列表，\n"
+                "必须恰好有一个组件 id 为 \"root\"；组件间用 id 互相引用：Row/Column/List 容器只能用 children（id 数组，如 [\"a\",\"b\"]），绝不能用 child；\n"
+                "Button/Card 等单子插槽只能用 child（单个 id），绝不能用 children，混用会导致校验失败。\n"
+                "可用组件：Text(text, variant: h1|h2|h3|body|caption)、Button(child, variant: primary|default|borderless, action)、"
+                "TextField(label, value, variant: shortText|longText|obscured)、CheckBox(label, value)、"
+                "ChoicePicker(label, options:[{label,value}], value(已选值数组，可绑定 data 中的数组), variant: mutuallyExclusive|multipleSelection)、Slider、"
+                "DateTimeInput、Card(child)、Row/Column(children, justify: start|center|end|spaceBetween|spaceAround|spaceEvenly|stretch, align: start|center|end|stretch，"
+                "禁用 flex-end 等 CSS 值)、List、Tabs、Divider、Image。\n"
+                "动态值：属性可写字面量，也可用 {\"path\": \"/键名\"} 绑定 data 参数里的数据模型。\n"
+                "按钮回传格式：action={\"event\": {\"name\": \"<事件名>\", \"context\": {\"字段\": {\"path\": \"/键名\"}}}}，\n"
+                "用户点击后其填写的数据会作为新消息回传给你，届时继续处理。\n"
+                "最小示例：components=[{\"id\":\"root\",\"component\":\"Column\",\"children\":[\"t\",\"b\"]},"
+                "{\"id\":\"t\",\"component\":\"Text\",\"text\":\"是否继续执行？\"},"
+                "{\"id\":\"b\",\"component\":\"Button\",\"child\":\"bl\",\"variant\":\"primary\","
+                "\"action\":{\"event\":{\"name\":\"confirm\",\"context\":{}}}},"
+                "{\"id\":\"bl\",\"component\":\"Text\",\"text\":\"确认\"}]"
+            )
+            system_prompt = (
+                f"{system_prompt}{_a2ui_hint}" if system_prompt else _a2ui_hint
             )
         create_kwargs: dict[str, Any] = {
             "system_prompt": system_prompt,

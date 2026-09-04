@@ -2,13 +2,14 @@
 
 The former Profile governance layer (draft → compile → publish → rollback)
 has been removed.  Agent configuration now lives in each workspace's
-``agent.json`` file; :class:`AgentService` orchestrates workspace creation,
-configuration writes, and runtime start/stop.
+``agent.json`` file; :class:`AgentService` orchestrates workspace
+creation, configuration writes, and runtime bookkeeping.  Agent records
+are persisted exclusively through :meth:`AgentRuntime.register_agent` /
+:meth:`AgentRuntime.remove_agent` — a single write path.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any
 
 from agentcore.repository import ControlPlaneStore
@@ -63,6 +64,7 @@ class AgentService:
         enable_subagents: bool | None = None,
         inherit_parent_tools: bool | None = None,
         interrupt_rules: list[dict[str, Any]] | None = None,
+        extra_settings: dict[str, Any] | None = None,
     ) -> Any:
         """Create an Agent workspace and its ``agent.json`` configuration.
 
@@ -101,47 +103,39 @@ class AgentService:
             settings["inherit_parent_tools"] = inherit_parent_tools
         if interrupt_rules:
             settings["interrupt_rules"] = interrupt_rules
+        # Merge caller-supplied settings (e.g. sandbox backend config).
+        # Individual fields above take precedence over the raw settings dict.
+        if extra_settings:
+            for key, value in extra_settings.items():
+                settings.setdefault(key, value)
         if settings:
             config["settings"] = settings
 
         if config:
             workspace.write_agent_config(config)
 
-        # Persist the agent record (same shape as AgentInstance.to_state_dict
-        # so AgentRuntime can restore it on startup).
-        self.store.save_agent_state(
-            agent_id,
-            {
-                "agent_id": agent_id,
-                "state": "idle",
-                "created_at": datetime.now(tz=timezone.utc).isoformat(),
-                "last_active_at": None,
-                "error": None,
-            },
-        )
+        # Register the agent record via the runtime (single write path —
+        # the runtime persists it so the agent survives restarts).
+        if self._runtime is not None:
+            self._runtime.register_agent(agent_id)
         return workspace
 
     async def start_agent(self, agent_id: str, **kwargs: Any) -> Any:
-        """Start an agent from its workspace ``agent.json`` configuration.
+        """Warm-up: load the agent's workspace and ensure a record exists.
 
-        Loads (or creates) the workspace, reads ``agent.json``, and
-        delegates to :meth:`AgentRuntime.start_agent`.  Returns the
+        In a request-driven runtime there is nothing to "start" — the
+        agent graph is built lazily on first use.  This method only
+        loads the workspace (so subsequent requests are fast) and
+        guarantees a runtime record exists; returns the
         :class:`~agentcore.runtime.agent_runtime.AgentInstance`.
         """
         rt = self._require_runtime()
         manager = self._require_agent_manager()
-        workspace = await manager.get_or_create_workspace(agent_id)
-        agent_config = workspace.read_agent_config()
-        return await rt.start_agent(
-            agent_id,
-            agent_config,
-            workspace_dir=workspace.workspace_dir,
-            workspace=workspace,
-            **kwargs,
-        )
+        await manager.get_or_create_workspace(agent_id)
+        return await rt.start_agent(agent_id, **kwargs)
 
     async def stop_agent(self, agent_id: str) -> None:
-        """Stop a running agent."""
+        """Mark an agent idle (idempotent; unloading happens in the router)."""
         rt = self._require_runtime()
         await rt.stop_agent(agent_id)
 

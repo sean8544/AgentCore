@@ -34,6 +34,14 @@ htmlcov/
 # AgentCore runtime data
 .agentcore/
 
+# Installed console assets (copied by installers to venv root)
+# venv/ is already ignored above
+
 # Misc
 *.tmp
 *.bak
+
+# Playwright MCP screenshots and logs (temporary)
+.playwright-mcp/
+# Pytest temporary files (temporary)
+.pytest_tmp/

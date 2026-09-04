@@ -3,7 +3,6 @@ import {
   Alert,
   Badge,
   Button,
-  Card,
   Collapse,
   Form,
   Input,
@@ -33,12 +32,11 @@ import type { ColumnsType } from 'antd/es/table';
 import { apiClient } from '../../api/client';
 import { useAgentStore } from '../../stores/agentStore';
 import { useI18n } from '../../i18n';
+import GoogleCard from '../../components/GoogleCard';
+import GooglePageHeader from '../../components/GooglePageHeader';
 
 const { Text } = Typography;
 const { TextArea } = Input;
-
-/* ───────── Constants ───────── */
-const ORANGE = '#FF7F16';
 const PROVIDER_OPTIONS = [
   { value: 'openai', labelKey: 'providerOpenaiCompat' },
   { value: 'azure', labelKey: 'providerAzure' },
@@ -93,6 +91,19 @@ const EMPTY_FORM: FormValues = {
 
 const keyOf = (m: { provider: string; name: string; base_url: string }) =>
   `${m.provider}|${m.name}|${m.base_url}`;
+
+/** Extract a human-readable detail from an axios/network error. */
+const extractErrorDetail = (err: unknown): string | undefined => {
+  const e = err as {
+    response?: { data?: { detail?: string; error?: string } };
+    message?: string;
+  };
+  return e?.response?.data?.detail ?? e?.response?.data?.error ?? e?.message;
+};
+
+/** Long upstream errors (e.g. raw 429 JSON) are truncated for toasts. */
+const shortError = (s?: string) =>
+  s && s.length > 120 ? `${s.slice(0, 120)}…` : s;
 
 export default function ModelsPage() {
   const agents = useAgentStore((s) => s.agents);
@@ -209,10 +220,10 @@ export default function ModelsPage() {
           antdMessage.error(res.data.error ?? t('models.connectionFailed'));
         }
       } catch (err) {
-        const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+        const detail = extractErrorDetail(err) ?? t('models.testFailed');
         setTestStates((prev) => ({ ...prev, [key]: 'failed' }));
-        setTestErrors((prev) => ({ ...prev, [key]: detail ?? t('models.requestFailed') }));
-        antdMessage.error(detail ?? t('models.testFailed'));
+        setTestErrors((prev) => ({ ...prev, [key]: detail }));
+        antdMessage.error(shortError(detail));
       }
     },
     [t],
@@ -286,13 +297,26 @@ export default function ModelsPage() {
     }
     setModalTest({ state: 'testing' });
     try {
+      // ``headers`` / ``extraBodyText`` live inside a Collapse — when it
+      // stays collapsed the fields are unregistered and read as undefined.
+      let extraBody: Record<string, unknown> | undefined;
+      const extraText = values.extraBodyText?.trim();
+      if (extraText) {
+        try {
+          extraBody = JSON.parse(extraText);
+        } catch {
+          antdMessage.warning(t('models.invalidJson'));
+          setModalTest({ state: 'idle' });
+          return;
+        }
+      }
       const res = await apiClient.post('/models/test', {
         name: values.name.trim(),
         base_url: values.base_url.trim(),
         api_key: values.api_key.trim() || undefined,
         api_key_env: values.api_key_env.trim() || undefined,
         headers: (values.headers ?? []).filter((h) => h?.key?.trim()),
-        extra_body: values.extraBodyText.trim() ? JSON.parse(values.extraBodyText) : undefined,
+        extra_body: extraBody,
       });
       const result: string = res.data.result;
       if (result === 'ok') {
@@ -307,15 +331,15 @@ export default function ModelsPage() {
         antdMessage.success(t('models.testOk'));
       } else if (result === 'warning') {
         setModalTest({ state: 'warning', detail: res.data.error });
-        antdMessage.warning(res.data.error ?? t('models.connectionWarning'));
+        antdMessage.warning(shortError(res.data.error) ?? t('models.connectionWarning'));
       } else {
         setModalTest({ state: 'failed', detail: res.data.error });
-        antdMessage.error(res.data.error ?? t('models.connectionFailed'));
+        antdMessage.error(shortError(res.data.error) ?? t('models.connectionFailed'));
       }
     } catch (err) {
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setModalTest({ state: 'failed', detail: detail ?? t('models.testFailed') });
-      antdMessage.error(detail ?? t('models.testFailed'));
+      const detail = extractErrorDetail(err) ?? t('models.testFailed');
+      setModalTest({ state: 'failed', detail });
+      antdMessage.error(shortError(detail));
     }
   }, [form, t]);
 
@@ -383,7 +407,7 @@ export default function ModelsPage() {
           <Space size={4}>
             {record.is_default && (
               <Tooltip title={t('models.defaultHint')}>
-                <StarFilled style={{ color: '#f5a623', fontSize: 13 }} />
+                <StarFilled style={{ color: 'var(--google-chart-3)', fontSize: 13 }} />
               </Tooltip>
             )}
             <Text strong style={{ fontSize: 13 }}>{name}</Text>
@@ -474,10 +498,10 @@ export default function ModelsPage() {
             >
               {t('models.test')}
             </Button>
-            {state === 'ok' && <CheckCircleOutlined style={{ color: '#52c41a' }} />}
+            {state === 'ok' && <CheckCircleOutlined style={{ color: 'var(--google-chart-5)' }} />}
             {(state === 'warning' || state === 'failed') && (
               <Tooltip title={testErrors[record.id]}>
-                <CloseCircleOutlined style={{ color: state === 'warning' ? '#faad14' : '#ff4d4f' }} />
+                <CloseCircleOutlined style={{ color: state === 'warning' ? 'var(--google-chart-3)' : 'var(--google-destructive)' }} />
               </Tooltip>
             )}
           </Space>
@@ -512,40 +536,35 @@ export default function ModelsPage() {
   /* ── Modal ── */
   const modalTestAlert =
     modalTest.state === 'ok' ? (
-      <Alert type="success" showIcon message={modalTest.detail ?? t('models.testOk')} style={{ marginBottom: 12 }} />
+      <Alert type="success" showIcon message={modalTest.detail ?? t('models.testOk')} style={{ marginBottom: 'var(--google-space-4)' }} />
     ) : modalTest.state === 'warning' ? (
-      <Alert type="warning" showIcon icon={<WarningOutlined />} message={modalTest.detail ?? t('models.connectionWarning')} style={{ marginBottom: 12 }} />
+      <Alert type="warning" showIcon icon={<WarningOutlined />} message={modalTest.detail ?? t('models.connectionWarning')} style={{ marginBottom: 'var(--google-space-4)' }} />
     ) : modalTest.state === 'failed' ? (
-      <Alert type="error" showIcon message={t('models.testFailedDetail', { error: modalTest.detail ?? '' })} style={{ marginBottom: 12 }} />
+      <Alert type="error" showIcon message={t('models.testFailedDetail', { error: modalTest.detail ?? '' })} style={{ marginBottom: 'var(--google-space-4)' }} />
     ) : null;
 
   const isEdit = editing !== null;
 
   return (
-    <div style={{ padding: 24 }}>
-      <Card
-        styles={{ body: { padding: 0 } }}
-        title={
-          <Space>
-            <ApiOutlined style={{ color: ORANGE }} />
-            <span>{t('models.title')}</span>
-            <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
-              {t('models.subtitle')}
-            </Text>
-          </Space>
-        }
+    <div>
+      <GooglePageHeader
+        icon={<ApiOutlined />}
+        title={t('models.title')}
+        subtitle={t('models.subtitle')}
         extra={
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
             {t('models.addModel')}
           </Button>
         }
-      >
+      />
+
+      <GoogleCard bodyStyle={{ padding: 0 }}>
         {!loading && models.length === 0 && (
           <Alert
             type="info"
             showIcon
             message={t('models.noRegistryHint')}
-            style={{ margin: 16, marginBottom: 0 }}
+            style={{ margin: 'var(--google-space-6)', marginBottom: 0 }}
           />
         )}
         <Table<RegistryModel>
@@ -557,7 +576,7 @@ export default function ModelsPage() {
           pagination={false}
           locale={{ emptyText: t('models.noModels') }}
         />
-      </Card>
+      </GoogleCard>
 
       <Modal
         title={isEdit ? t('models.editModel') : t('models.addModel')}
@@ -625,21 +644,21 @@ export default function ModelsPage() {
 
           <Collapse
             ghost
-            style={{ marginBottom: 8, paddingInline: 0 }}
+            style={{ marginBottom: 'var(--google-space-3)', paddingInline: 0 }}
             items={[
               {
                 key: 'advanced',
                 label: t('models.advanced'),
                 children: (
                   <>
-                    <Text strong style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
+                    <Text strong style={{ fontSize: 12, display: 'block', marginBottom: 'var(--google-space-2)' }}>
                       {t('models.customHeaders')}
                     </Text>
                     <Form.List name="headers">
                       {(fields, { add, remove }) => (
                         <>
                           {fields.map((field) => (
-                            <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 8 }}>
+                            <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 'var(--google-space-3)' }}>
                               <Form.Item
                                 name={[field.name, 'key']}
                                 style={{ marginBottom: 0, width: 220 }}
@@ -665,15 +684,15 @@ export default function ModelsPage() {
                       )}
                     </Form.List>
                     <Text type="secondary" style={{ fontSize: 11 }}>{t('models.headerHint')}</Text>
-                    <div style={{ marginTop: 16 }}>
-                      <Text strong style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
+                    <div style={{ marginTop: 'var(--google-space-6)' }}>
+                      <Text strong style={{ fontSize: 12, display: 'block', marginBottom: 'var(--google-space-2)' }}>
                         {t('models.generationParams')}
                       </Text>
-                      <Form.Item name="extraBodyText" style={{ marginBottom: 4 }}>
+                      <Form.Item name="extraBodyText" style={{ marginBottom: 'var(--google-space-2)' }}>
                         <TextArea
                           rows={4}
                           placeholder={'{\n  "extra_body": {\n    "enable_thinking": false,\n    "max_tokens": 2048\n  }\n}'}
-                          style={{ fontFamily: 'monospace', fontSize: 12 }}
+                          style={{ fontFamily: 'var(--google-font-mono)', fontSize: 12 }}
                         />
                       </Form.Item>
                       <Text type="secondary" style={{ fontSize: 11 }}>{t('models.generationParamsHint')}</Text>
@@ -686,8 +705,8 @@ export default function ModelsPage() {
 
           <Form.Item name="is_default" valuePropName="checked" style={{ marginBottom: 0 }}>
             <Switch checkedChildren={t('models.default')} unCheckedChildren={t('models.default')} />
-            <Text style={{ marginLeft: 8, fontSize: 12 }}>{t('models.isDefault')}</Text>
-            <Text type="secondary" style={{ marginLeft: 8, fontSize: 11 }}>{t('models.defaultHint')}</Text>
+            <Text style={{ marginLeft: 'var(--google-space-4)', fontSize: 12 }}>{t('models.isDefault')}</Text>
+            <Text type="secondary" style={{ marginLeft: 'var(--google-space-4)', fontSize: 11 }}>{t('models.defaultHint')}</Text>
           </Form.Item>
         </Form>
       </Modal>
